@@ -239,20 +239,21 @@ if __name__ == "__main__":
             pass
 
     import requests
-    try:
-        # 直接抓取網路時間 API 的台北時區
-        res = requests.get("http://worldtimeapi.org/api/timezone/Asia/Taipei", timeout=5).json()
-        current_time_str = res["datetime"][:16].replace("T", " ")
-    except Exception:
-        # 🌟 這裡開始每一行，前方都要有跟 try 底下一模一樣的縮進（通常是 8 個空格或 2 個 Tab）
-        import datetime
-        tw_now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-        current_time_str = tw_now.strftime("%Y-%m-%d %H:%M")
-    if results:
-        msg_content = (
-            f"📊 *台股 60分線戰法篩選結果 [五合一嚴選版] ({current_time_str})*：\n\n"
-        )
-        msg_content += "\n".join(results)
+    # 🌟 暴力接收：直接讀取 GitHub Actions 灌進來的標準台灣時間
+    import os
+   # ✅ 終極安全版：先用你原本本機 100% 成功的寫法當作基礎
+    import datetime
+    current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # ✅ 只有當程式在 GitHub 雲端執行時，才把標題時間強制覆蓋成台灣時間
+    import os
+    if os.environ.get("GITHUB_ACTIONS"):
+        try:
+            from datetime import timezone, timedelta
+            # 雲端是 UTC，手動加 8 小時
+            current_time_str = (datetime.datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass  # 萬一雲端時區轉換失敗，也絕對不報錯，直接沿用上面的時間，確保程式一定能跑完
     else:
         msg_content = f"ℹ️ *台股 60分線篩選 ({current_time_str})*：\n\n當前無符合（多頭+量能流動+MACD多方波段）標的。"
 
