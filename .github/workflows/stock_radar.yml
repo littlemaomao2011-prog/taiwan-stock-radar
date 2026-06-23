@@ -1,13 +1,7 @@
 name: 台股 60分線五合一雷達排程
 
 on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 2 * * 1-5'   # 台灣時間 10:00
-    - cron: '0 3 * * 1-5'   # 台灣時間 11:00
-    - cron: '0 4 * * 1-5'   # 台灣時間 12:00
-    - cron: '0 5 * * 1-5'   # 台灣時間 13:00
-    - cron: '0 6 * * 1-5'   # 台灣時間 14:00
+  workflow_dispatch: # ✅ 留下這個就好，讓你想手動測再測
 
 jobs:
   run-radar:
@@ -21,25 +15,15 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-        cache: 'pip' # 啟用快取，讓每次執行的環境更穩定
-    
-    - name: 設定 Python 環境
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip' # 🌟 啟動了環境快取
 
     - name: 安裝必要套件
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt || pip install yfinance pandas pandas_ta requests
+        pip install yfinance pandas pandas_ta requests
 
-   - name: 執行台股雷達篩選
+    - name: 執行台股雷達篩選
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        # 🌟 暴力覆蓋：直接在 Linux 雲端主機強制計算精準的台灣時間 (UTC+8) 並導出成環境變數
-        export TAIWAN_TIME=$(TZ="Asia/Taipei" date +"%Y-%m-%d %H:%M")
-        sleep $((1 + RANDOM % 10))
         python scanner.py
