@@ -241,17 +241,20 @@ if __name__ == "__main__":
     import requests
     # 🌟 暴力接收：直接讀取 GitHub Actions 灌進來的標準台灣時間
     import os
-  # === 請直接將此段覆蓋至程式碼最末端 (if results: 之前) ===
-    import datetime
-    current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+import datetime
 
-    # === 底下維持你原本的發送邏輯，請確保靠最左邊對齊，不要縮進進迴圈 ===
-    if results:
-        msg_content = (
-            f"📊 *台股 60分線戰法篩選結果 [五合一嚴選版]* ({current_time_str}) :\n\n"
-        )
-        msg_content += "\n".join(results)
-    else:
-        msg_content = f"ℹ️ *台股 60分線篩選* ({current_time_str}) :\n\n當前無符合 (多頭+量能流動+MACD多方波段) 標的。"
+# 1. 徹底抽離，單純用本機最穩定的時間，絕不放進迴圈
+current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
+# 2. 判斷並組合訊息
+if 'results' in locals() and results:
+    msg_content = f"📊 *台股 60分線戰法篩選結果 [五合一嚴選版]* ({current_time_str}) :\n\n"
+    msg_content += "\n".join(results)
+else:
+    msg_content = f"ℹ️ *台股 60分線篩選* ({current_time_str}) :\n\n當前無符合 (多頭+量能流動+MACD多方波段) 標的。"
+
+# 3. 發送通知
+try:
     send_to_telegram(msg_content)
+except Exception as e:
+    print(f"Telegram 發送失敗: {e}")
