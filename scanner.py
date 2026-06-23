@@ -244,9 +244,9 @@ if __name__ == "__main__":
         res = requests.get("http://worldtimeapi.org/api/timezone/Asia/Taipei", timeout=5).json()
         current_time_str = res["datetime"][:16].replace("T", " ")
     except Exception:
-        # 如果網路超時，才用系統時間當備案
-        from datetime import timezone
-        tw_now = datetime.datetime.now(timezone.utc) + datetime.timedelta(hours=8)
+        # 🌟 這裡開始每一行，前方都要有跟 try 底下一模一樣的縮進（通常是 8 個空格或 2 個 Tab）
+        import datetime
+        tw_now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
         current_time_str = tw_now.strftime("%Y-%m-%d %H:%M")
     if results:
         msg_content = (
