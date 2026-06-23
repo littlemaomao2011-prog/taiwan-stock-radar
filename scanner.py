@@ -238,7 +238,8 @@ if __name__ == "__main__":
         except Exception as e:
             pass
 
-    current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    tw_now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    current_time_str = tw_now.strftime("%Y-%m-%d %H:%M")
     if results:
         msg_content = (
             f"📊 *台股 60分線戰法篩選結果 [五合一嚴選版] ({current_time_str})*：\n\n"
