@@ -238,9 +238,16 @@ if __name__ == "__main__":
         except Exception as e:
             pass
 
-    from datetime import timezone
-    tw_now = datetime.datetime.now(timezone.utc) + datetime.timedelta(hours=8)
-    current_time_str = tw_now.strftime("%Y-%m-%d %H:%M")
+    import requests
+    try:
+        # 直接抓取網路時間 API 的台北時區
+        res = requests.get("http://worldtimeapi.org/api/timezone/Asia/Taipei", timeout=5).json()
+        current_time_str = res["datetime"][:16].replace("T", " ")
+    except Exception:
+        # 如果網路超時，才用系統時間當備案
+        from datetime import timezone
+        tw_now = datetime.datetime.now(timezone.utc) + datetime.timedelta(hours=8)
+        current_time_str = tw_now.strftime("%Y-%m-%d %H:%M")
     if results:
         msg_content = (
             f"📊 *台股 60分線戰法篩選結果 [五合一嚴選版] ({current_time_str})*：\n\n"

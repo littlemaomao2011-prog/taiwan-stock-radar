@@ -22,6 +22,12 @@ jobs:
       with:
         python-version: '3.10'
         cache: 'pip' # 啟用快取，讓每次執行的環境更穩定
+    
+    - name: 設定 Python 環境
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+        cache: 'pip' # 🌟 啟動了環境快取
 
     - name: 安裝必要套件
       run: |
