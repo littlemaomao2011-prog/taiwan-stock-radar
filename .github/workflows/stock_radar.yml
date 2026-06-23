@@ -34,11 +34,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt || pip install yfinance pandas pandas_ta requests
 
-    - name: 執行台股雷達篩選
+   - name: 執行台股雷達篩選
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: |
-        # 🌟 在執行前隨機延遲 1~10 秒，打散固定整點的請求，避免被 Yahoo 雲端防火牆阻擋
+        # 🌟 暴力覆蓋：直接在 Linux 雲端主機強制計算精準的台灣時間 (UTC+8) 並導出成環境變數
+        export TAIWAN_TIME=$(TZ="Asia/Taipei" date +"%Y-%m-%d %H:%M")
         sleep $((1 + RANDOM % 10))
         python scanner.py
