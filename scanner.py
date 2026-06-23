@@ -98,17 +98,7 @@ def scan_60m_stock(stock_item):
     market = stock_item["market"]
 
     yf_code = f"{stock_id}.TWO" if market == "otc" else f"{stock_id}.TW"
-   try:
-        df = yf.download(
-            tickers=yf_code, 
-            period="100d", 
-            interval="60m", 
-            progress=False,
-            threads=False,       # 關閉多線程，降低被防爬蟲盯上的機率
-            ignore_tz=False      # 保留時區資訊，確保時間對齊
-        )
-    except Exception:
-        df = pd.DataFrame()
+    df = yf.download(tickers=yf_code, period="100d", interval="60m", progress=False)
 
     if df.empty or len(df) < 80:
         return None

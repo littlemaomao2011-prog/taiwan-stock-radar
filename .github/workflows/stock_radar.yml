@@ -1,40 +1,38 @@
 name: 台股 60分線五合一雷達排程
 
 on:
-  # 🎯 定時排程設定 (使用 UTC 時間)
-  schedule:
-    # 台灣時間 10:00, 11:00, 12:00, 13:00, 14:00 (週一至週五)
-    # 轉換為 UTC 時間為 02:00, 03:00, 04:00, 05:00, 06:00
-    - cron: '0 2-6 * * 1-5'
-  
-  # 🔄 保留手動觸發按鈕，方便你隨時測試
   workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 1-5'   # 台灣時間 10:00
+    - cron: '0 3 * * 1-5'   # 台灣時間 11:00
+    - cron: '0 4 * * 1-5'   # 台灣時間 12:00
+    - cron: '0 5 * * 1-5'   # 台灣時間 13:00
+    - cron: '0 6 * * 1-5'   # 台灣時間 14:00
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
 
     steps:
-    # 1. 複製 GitHub 倉庫程式碼到雲端主機
-    - name: Checkout repository
-      uses: actions/checkout@v3
+    - name: 檢查程式碼
+      uses: actions/checkout@v4
 
-    # 2. 設定 Python 環境
-    - name: Set up Python
-      uses: actions/setup-python@v4
+    - name: 設定 Python 環境
+      uses: actions/setup-python@v5
       with:
-        python-python-version: '3.10'
+        python-version: '3.10'
+        cache: 'pip' # 啟用快取，讓每次執行的環境更穩定
 
-    # 3. 安裝必備的套件 (避免重試失敗，加上 --no-cache-dir)
-    - name: Install dependencies
+    - name: 安裝必要套件
       run: |
         python -m pip install --upgrade pip
-        pip install pandas pandas-ta requests yfinance
+        pip install -r requirements.txt || pip install yfinance pandas pandas_ta requests
 
-    # 4. 執行主程式並帶入安全金鑰
-    - name: Run Stock Scanner
+    - name: 執行台股雷達篩選
       env:
-        # 🌟 將 GitHub Secrets 映射至系統環境變數，供 Python 讀取
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: python scanner.py
+      run: |
+        # 🌟 在執行前隨機延遲 1~10 秒，打散固定整點的請求，避免被 Yahoo 雲端防火牆阻擋
+        sleep $((1 + RANDOM % 10))
+        python scanner.py
