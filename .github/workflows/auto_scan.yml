@@ -2,11 +2,10 @@ name: 台股 666 鐵血起漲點排程掃描
 
 on:
   schedule:
-    # ⚠️ 關鍵設定：配合 GitHub 伺服器使用的國際標準時間 (UTC)
     # 台股盤中 9:30, 10:30, 11:30, 12:30, 13:30, 14:30 (每逢半點觸發)
-    # 轉換為 UTC 時間為：01:30, 02:30, 03:30, 04:30, 05:30, 06:30
+    # 轉換為國際標準時間 UTC 為：01:30, 02:30, 03:30, 04:30, 05:30, 06:30
     - cron: '30 1-6 * * 1-5'
-  workflow_dispatch: # 允許你隨時手動上網點擊執行測試
+  workflow_dispatch: # 允許手動點擊執行
 
 jobs:
   run-scanner:
@@ -14,12 +13,11 @@ jobs:
 
     steps:
     - name: 📥 複製專案代碼
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
 
     - name: 🐍 設定 Python 環境
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-modules: true
         python-version: '3.10'
 
     - name: 📦 安裝必要的技術指標套件
@@ -29,7 +27,6 @@ jobs:
 
     - name: 🚀 鐵血執行起漲雷達
       env:
-        # ⚠️ 這裡會自動讀取你設定在 GitHub 網站背後的密鑰，保護隱私不外洩
         TG_TOKEN: ${{ secrets.TG_TOKEN }}
         TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: python scanner_rising_point.py
