@@ -1,34 +1,24 @@
-import os
 import datetime
 import time
 import requests
 import logging
-import warnings
 import pandas as pd
 import pandas_ta as ta
 import yfinance as yf
 
-# 100% 靜音令與忽略警告通知
+# 100% 靜音令，不允許任何 yfinance 錯誤訊息污染畫面
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
-warnings.simplefilter(action='ignore', category=FutureWarning)
-warnings.simplefilter(action='ignore', category=UserWarning)
-
-# 啟用 Pandas 中文字元寬度自動對齊功能
-pd.set_option('display.unicode.ambiguous_as_wide', True)
-pd.set_option('display.unicode.east_asian_width', True)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.width', 1000)
 
 # ==========================================
 # 0. 設定您的 Telegram 資訊
 # ==========================================
-TELEGRAM_TOKEN = os.environ.get("TG_TOKEN", "請在此輸入你的BotFather_Token")
-TELEGRAM_CHAT_ID = os.environ.get("TG_CHAT_ID", "請在此輸入你的Telegram_Chat_ID")
+TELEGRAM_TOKEN = "請在此輸入你的BotFather_Token"
+TELEGRAM_CHAT_ID = "請在此輸入你的Telegram_Chat_ID"
 
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try: 
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=5)
     except: 
         pass
 
@@ -41,8 +31,10 @@ def get_all_taiwan_stocks():
         resp = requests.get("https://api.finmindtrade.com/api/v4/data", params={"dataset": "TaiwanStockInfo"}).json()
         if resp["status"] == 200:
             df = pd.DataFrame(resp["data"])
+            # 過濾非普通股（排除 ETF、權證、憑證、債券，只留4碼純股票）
             df = df[(~df["industry_category"].str.contains("ETF|債|憑證|證券|信託|存託憑證", na=True)) & (df["stock_id"].str.len() == 4)]
             
+            # 排除超大型牛皮權值股 (可依喜好註解掉)
             heavy = ["2330", "2317", "2454", "2308", "2881", "2882", "2886", "2002"]
             df = df[~df["stock_id"].isin(heavy)]
             
@@ -65,162 +57,154 @@ def get_all_taiwan_stocks():
     return {}
 
 # ==========================================
-# 2. 「100% 鐵血 666 戰法」核心邏輯
+# 2. 核心 666 戰法運算邏輯 (防摔防護罩)
 # ==========================================
-def calculate_true_666_strategy(df_60m, df_d):
-    required_cols = ["High", "Low", "Close", "Volume", "Open"]
-    if not all(col in df_60m.columns for col in required_cols): return None
-    if not "Volume" in df_d.columns: return None
-    if len(df_60m) < 65 or len(df_d) < 5: return None
-    
-    # 5日均量基本防禦
-    recent_5d_vol = df_d["Volume"].dropna().tail(5)
-    if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 1000000: return None
-    
-    c_ser = df_60m["Close"].squeeze()
-    h_ser = df_60m["High"].squeeze()
-    l_ser = df_60m["Low"].squeeze()
-    v_ser = df_60m["Volume"].squeeze()
-    o_ser = df_60m["Open"].squeeze()
-    
-    # 指標計算
-    ma60_series = ta.sma(c_ser, length=60)
-    if ma60_series is None or len(ma60_series) == 0: return None
-    ma60 = ma60_series.iloc[-1]
-    
-    # 計算 KD (60, 3, 3)
-    kd_df = ta.stoch(high=h_ser, low=l_ser, close=c_ser, k=60, d=3, smooth_k=3)
-    if kd_df is None or len(kd_df) < 2: return None
-    
-    # 採用名稱對齊抓取 KD
-    k_col = [col for col in kd_df.columns if col.startswith("STOCHk")][0]
-    d_col = [col for col in kd_df.columns if col.startswith("STOCHd")][0]
-    
-    kv = float(kd_df[k_col].iloc[-1])
-    dv = float(kd_df[d_col].iloc[-1])
-    
-    # 核心防護線：K值未達60直接淘汰
-    if kv < 60.0: return None
-    
-    # 計算 MACD
-    macd_df = ta.macd(close=c_ser, fast=12, slow=26, signal=9)
-    if macd_df is None or len(macd_df) < 2: return None
-    macd_diff = float(macd_df.iloc[-1, 1])
-    
-    # 計算 VR(26)
-    chg = c_ser.diff()
-    su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
-    sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
-    sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
-    if pd.isna(su) or pd.isna(sd) or pd.isna(sf): return None
-    denom = 1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf)
-    vr26 = ((su + 0.5 * sf) / denom) * 100
-    
-    # 計算 布林通道
-    bb_df = ta.bbands(close=c_ser, length=20, std=2)
-    if bb_df is None or len(bb_df) < 2: return None
-    bb_upper = float(bb_df.iloc[-1, 2])
-    bb_middle = float(bb_df.iloc[-1, 1])
-    
-    c_p = float(c_ser.iloc[-1])
-    o_p = float(o_ser.iloc[-1])
-    v_p = float(v_ser.iloc[-1])
-    
-    v_mean_20h = v_ser.tail(21).head(20).mean()
-    
-    # 基礎多頭型態過濾
-    if c_p < bb_middle or c_p < ma60: return None
-    if v_mean_20h > 0 and v_p < v_mean_20h: return None
-    if (c_p - o_p) / o_p * 100 < -0.5: return None
-
-    # 嚴格確認 666 多頭發動門檻
-    if kv > dv and macd_diff > 0 and vr26 >= 100.0:
-        vol_multiple = round(v_p / v_mean_20h, 1) if v_mean_20h > 0 else 1.0
-        return {
-            "現價": round(c_p, 2),
-            "60MA位置": round(ma60, 2),
-            "布林上軌": round(bb_upper, 2),
-            "小時量比": f"{vol_multiple}倍",
-            "K值": round(kv, 1),
-            "D值": round(dv, 1),
-            "MACD柱": round(macd_diff, 3),
-            "VR值": f"{round(vr26, 1)}%"
-        }
+def calculate_666_strategy(df_60m, df_d):
+    try:
+        # 強制轉換並壓平所有欄位名稱為小寫
+        if isinstance(df_60m.columns, pd.MultiIndex):
+            df_60m.columns = [c[0].lower() for c in df_60m.columns]
+        else:
+            df_60m.columns = [c.lower() for c in df_60m.columns]
+            
+        if isinstance(df_d.columns, pd.MultiIndex):
+            df_d.columns = [c[0].lower() for c in df_d.columns]
+        else:
+            df_d.columns = [c.lower() for c in df_d.columns]
+        
+        # 檢查必備欄位與資料長度
+        for col in ["close", "high", "low", "volume"]:
+            if col not in df_60m.columns or col not in df_d.columns:
+                return None
+                
+        if len(df_60m) < 65 or len(df_d) < 6: 
+            return None
+        
+        # 條件 1: 5 日均量 > 1000張 (yfinance 單位為股，1000張 = 1,000,000股)
+        vol_series = df_d["volume"].dropna()
+        if len(vol_series) >= 5:
+            if vol_series.values[-5:].mean() < 1000000: 
+                return None
+        else:
+            return None
+        
+        c_ser = pd.Series(df_60m["close"].squeeze().values).dropna()
+        h_ser = pd.Series(df_60m["high"].squeeze().values).dropna()
+        l_ser = pd.Series(df_60m["low"].squeeze().values).dropna()
+        v_ser = pd.Series(df_60m["volume"].squeeze().values).dropna()
+        
+        if len(c_ser) < 65:
+            return None
+            
+        # 條件 2, 3, 4: MA, KD, MACD
+        ma60 = c_ser.rolling(60).mean().iloc[-1]
+        kd = ta.stoch(h_ser, l_ser, c_ser, k=60, d=3, smooth_k=3)
+        macd = ta.macd(close=c_ser)
+        if kd is None or macd is None or kd.empty or macd.empty: 
+            return None
+        
+        # 條件 5: VR(26)
+        chg = c_ser.diff()
+        su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
+        sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
+        sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
+        denom = 1 if (sd + 0.5 * sf) == 0 or pd.isna(sd + 0.5 * sf) else (sd + 0.5 * sf)
+        vr26 = ((su + 0.5 * sf) / denom) * 100
+        
+        c_p = float(c_ser.iloc[-1])
+        kv = float(kd.iloc[-1, 0])
+        dv = float(kd.iloc[-1, 1])
+        c_hist = float(macd.iloc[-1, 2])
+        
+        if c_p > ma60 and kv > dv and c_hist > 0 and vr26 >= 140:
+            return {
+                "現價": round(c_p, 2),
+                "60MA": round(ma60, 2),
+                "K值": round(kv, 1),
+                "MACD柱": round(c_hist, 3),
+                "VR值": f"{round(vr26, 1)}%"
+            }
+    except:
+        pass
     return None
 
 # ==========================================
-# 3. 主程式：全市場高速掃描流
+# 3. 主程式：全市場高速防炸掃描
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 戰法·全自動雲端雷達】...")
+    print("🚀 啟動【台股1000+全市場防炸雷達】...")
     stock_map = get_all_taiwan_stocks()
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
     
+    if total_count == 0:
+        print("❌ 無法取得股票清單，程式安全結束。")
+        exit(0)
+        
+    print(f"🎯 成功鎖定全台股共 {total_count} 檔。開始進行高速安全分流下載...")
+    
     results, tg_msgs = [], []
-    chunk_size = 50
+    chunk_size = 40  # 調低到每組 40 檔，確保 GitHub 伺服器下載最穩健
     
     for i in range(0, total_count, chunk_size):
         chunk = all_yf_codes[i:i + chunk_size]
+        
+        # 批量同步下載，就算 yfinance 壞掉也不准退出程式
         try:
-            data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=False)
-            data_d = yf.download(chunk, period="10d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
+            data_60m = yf.download(chunk, period="45d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
+            data_d = yf.download(chunk, period="10d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
         except Exception as e:
+            print(f"⚠️ 區段網路異常略過... ({e})")
             time.sleep(2)
             continue
             
+        # 逐檔解包計算
         for ticker in chunk:
             try:
-                if ticker not in data_60m.columns.get_level_values(0) or ticker not in data_d.columns.get_level_values(0):
+                # 確保這檔股票有順利下載到資料
+                if isinstance(data_60m.columns, pd.MultiIndex):
+                    if ticker not in data_60m.columns.get_level_values(0): continue
+                    df_stock_60m = data_60m[ticker]
+                else:
+                    df_stock_60m = data_60m
+                    
+                if isinstance(data_d.columns, pd.MultiIndex):
+                    if ticker not in data_d.columns.get_level_values(0): continue
+                    df_stock_d = data_d[ticker]
+                else:
+                    df_stock_d = data_d
+                
+                # 剔除完全沒資料的空白股票
+                if df_stock_60m.empty or df_stock_d.empty:
                     continue
-                
-                df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
-                df_stock_d = data_d[ticker].dropna(subset=["Close"])
-                
-                df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
-                df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
-                
-                res_strat = calculate_true_666_strategy(df_stock_60m, df_stock_d)
+                    
+                res_strat = calculate_666_strategy(df_stock_60m, df_stock_d)
                 if res_strat:
                     sid = stock_map[ticker]["sid"]
                     sname = stock_map[ticker]["sname"]
                     
                     report = {
-                        "代碼": sid, "名稱": sname, "現價": res_strat["現價"], 
-                        "60MA位置": res_strat["60MA位置"], "布林上軌": res_strat["布林上軌"], 
-                        "60分K值": res_strat["K值"], "60分D值": res_strat["D值"],
-                        "MACD柱": res_strat["MACD柱"], "小時量比": res_strat["小時量比"], "VR值": res_strat["VR值"]
+                        "股票代碼": sid, "股票名稱": sname,
+                        "現價(60分K)": res_strat["現價"], "60MA位置": res_strat["60MA"],
+                        "60分K值": res_strat["K值"], "MACD(柱狀體)": res_strat["MACD柱"], "60分VR值": res_strat["VR值"]
                     }
                     results.append(report)
-                    
-                    tg_msgs.append(
-                        f"🚨 <b>【鐵血 666 訊號】{sid} {sname}</b>\n"
-                        f" 📈 現價: {res_strat['現價']} (60MA: {res_strat['60MA位置']} | 上軌: {res_strat['布林上軌']})\n"
-                        f" 🔥 當前小時量比: <b>{res_strat['小時量比']}</b>\n"
-                        f" 📊 KD值: K <b>{res_strat['K值']}</b> ≧ 60 > D {res_strat['D值']}\n"
-                        f" ⚡ MACD柱: {res_strat['MACD柱']} | VR: {res_strat['VR值']}\n"
-                    )
+                    tg_msgs.append(f"🎯 <b>{sid} {sname}</b>\n   現價: {res_strat['現價']} | MACD柱: {res_strat['MACD柱']} | VR: {res_strat['VR值']}\n")
+                    print(f"🔥 [🎯飆股捕獲]：{sid} {sname} 符合全數條件！")
             except:
                 continue
                 
-        print(f"⏳ 雷達進度: {min(i + chunk_size, total_count)} / {total_count} 檔...")
-        time.sleep(0.4)
+        print(f"⏳ 全市場雷達進度: {min(i + chunk_size, total_count)} / {total_count} 已完成...")
+        time.sleep(0.3) # 保護機制，防止被 Yahoo 短期鎖 IP
         
-    print("\n" + "=" * 90 + "\n🔊 【鐵血 666 雷達】最終精選股票 (K值 ≧ 60 且 VR ≧ 100%)：\n" + "=" * 90)
+    print("\n" + "=" * 50 + "\n🔊 【60分線全市場大雷達】最終符合條件股票如下：\n" + "=" * 50)
     if results:
-        df_report = pd.DataFrame(results).sort_values(by="代碼").reset_index(drop=True)
+        df_report = pd.DataFrame(results).sort_values(by="股票代碼").reset_index(drop=True)
         print(df_report.to_string())
     else:
-        print("❌ 檢查完畢：目前市場上沒有任何股票符合 (K ≧ 60) 的鐵血 666 戰法條件。")
-    print("=" * 90 + "\n")
+        print("❌ 檢查完畢：全台股目前沒有任何股票同時符合條件。")
+    print("=" * 50 + "\n")
         
-    # ⚠️ 修正時區警告，改用標準 zone info / timezone-aware 寫法
-    tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
-    now = datetime.datetime.now(tz_taiwan).strftime("%Y-%m-%d %H:%M")
-    
-    if TELEGRAM_TOKEN != "請在此輸入你的BotFather_Token":
-        out_msg = f"🔔 <b>【台股 666 鐵血雷達回報】</b>\n⏰ 時間：{now}\n------------------------\n"
-        out_msg += "\n".join(tg_msgs) if tg_msgs else "❌ 目前市場無符合條件標的。"
-        send_tg_msg(out_msg)
-        
-    print("➔ 鐵血防線版全市場掃描完畢！")
+    now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    send_tg_msg(f"🔔 <b>【台股 666 全市場雷達回報】</b>\n⏰ 總掃描：{total_count} 檔\n⏰ 時間：{now}\n------------------------\n" + ("\n".join(tg_msgs) if tg_msgs else "❌ 當前時間無符合條件股票。"))
+    print("➔ 1000+ 檔全市場安全執行完畢！")
