@@ -19,11 +19,11 @@ jobs:
       with:
         python-version: '3.10'
 
-    # 💡 終極相容相依套件安裝：鎖定相容版本，防止 GitHub 環境底層閃退
+    # 💡 修正版安裝指令：移除強制的版本號，改用標準安裝
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas==2.2.2 pandas-ta==0.3.14b0 yfinance requests lxml
+        pip install pandas pandas-ta yfinance requests lxml
 
     - name: Run Stock Scanner Script
       run: python scanner_rising_point.py
