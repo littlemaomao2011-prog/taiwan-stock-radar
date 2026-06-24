@@ -19,11 +19,12 @@ jobs:
       with:
         python-version: '3.10'
 
-    # 💡 修正版安裝指令：移除強制的版本號，改用標準安裝
+    # 💡 終極相容修正：直接從 GitHub 安裝 pandas-ta 最新的開發者修正版，繞過 PyPI 的衝突
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas pandas-ta yfinance requests lxml
+        pip install pandas yfinance requests lxml
+        pip install git+https://github.com/twopirllc/pandas-ta.git@development
 
     - name: Run Stock Scanner Script
       run: python scanner_rising_point.py
