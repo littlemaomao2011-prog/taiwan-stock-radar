@@ -24,29 +24,17 @@ try:
         except: pass
 
     # ==========================================
-    # 1. 抓取全台灣上市櫃「所有」普通股 (嚴格雙重封鎖 > 50億股本)
+    # 1. 抓取全台灣上市櫃「所有」普通股 (全面解禁，不限股本)
     # ==========================================
     def get_all_taiwan_stocks():
-        print("📋 正在從 FinMind 載入全台股完整清單與股本資料...")
+        print("📋 正在從 FinMind 載入全台股完整清單...")
         try:
             resp = requests.get("https://api.finmindtrade.com/api/v4/data", params={"dataset": "TaiwanStockInfo"}).json()
             if resp["status"] == 200:
                 df = pd.DataFrame(resp["data"])
                 
-                # 排除非普通股（只留4碼股票）
+                # 排除非普通股（只留4碼普通股票，大型股、中型股一網打盡）
                 df = df[(~df["industry_category"].str.contains("ETF|債|憑證|證券|信託|存託憑證", na=True)) & (df["stock_id"].str.len() == 4)]
-                
-                # 💡 強制轉換股本欄位型態，確保過濾 > 50億 (500,000,000股) 絕對生效
-                if "shares_issued" in df.columns:
-                    df["shares_issued"] = pd.to_numeric(df["shares_issued"], errors='coerce')
-                    df = df[df["shares_issued"] < 500000000]
-                
-                # 手動加入黑名單：直接剔除你剛才收到的大型股與權值股，雙重保險！
-                heavy_blacklist = [
-                    "1303", "1513", "1514", "2312", "2351", "2421", "2441", "5347", # 南亞、中興電、亞力、金寶、順德、建準、超豐、世界
-                    "2330", "2317", "2454", "2308", "2881", "2882", "2886", "2002"  # 台積電、鴻海等超大權值
-                ]
-                df = df[~df["stock_id"].isin(heavy_blacklist)]
                 
                 stock_dict = {}
                 for _, row in df.iterrows():
@@ -63,7 +51,7 @@ try:
         return {}
 
     # ==========================================
-    # 2. 核心 666 戰法運算邏輯 (加入 1.5倍量爆發 + 布林 0.5% 嚴選)
+    # 2. 核心 666 戰法運算邏輯 (全市場 1.5倍量爆發 + 布林 0.5% 嚴選)
     # ==========================================
     def calculate_666_strategy(df_60m, df_d):
         try:
@@ -75,7 +63,7 @@ try:
             
             if len(df_60m) < 100 or len(df_d) < 6: return None
             
-            # 條件 1: 近5日均量 > 1000張 (1,000,000股)
+            # 條件 1: 近5日均量 > 1000張 (保證具備基本流動性)
             vol_series = df_d["volume"].dropna()
             avg_vol_5d = vol_series.values[-5:].mean()
             if avg_vol_5d < 1000000: return None
@@ -85,7 +73,7 @@ try:
             low_arr = df_60m["low"].squeeze().dropna()
             vol_arr = df_60m["volume"].squeeze().dropna()
             
-            # 💡【黃金量能爆發】：當前 60分線量 > 20分均量的 1.5 倍
+            # 💡【量能爆發濾網】：當前 60分線量 > 20分均量的 1.5 倍
             current_vol = float(vol_arr.iloc[-1])
             ma20_vol = vol_arr.rolling(20).mean().iloc[-1]
             if current_vol < (ma20_vol * 1.5): return None
@@ -153,7 +141,7 @@ try:
     # 3. 主程式
     # ==========================================
     if __name__ == "__main__":
-        print("🚀 啟動【台股 60分線戰法·五合一精準嚴選雷達】...")
+        print("🚀 啟動【台股全市場·60分線戰法精準雷達】...")
         stock_map = get_all_taiwan_stocks()
         all_yf_codes = list(stock_map.keys())
         total_count = len(all_yf_codes)
@@ -162,7 +150,7 @@ try:
             print("❌ 無法取得股票清單。")
             sys.exit(0)
             
-        print(f"🎯 成功鎖定嚴選中小型台股共 {total_count} 檔。開始進行分流下載...")
+        print(f"🎯 成功鎖定全台股共 {total_count} 檔普通股。開始進行指標與布林嚴選...")
         
         results, tg_msgs = [], []
         chunk_size = 40
@@ -209,10 +197,8 @@ try:
         
         if tg_msgs:
             send_tg_msg(header + "\n".join(tg_msgs))
-            print(f"➔ 已發送 {len(tg_msgs)} 檔嚴選股票。")
         else:
             send_tg_msg(header + "❌ 當前時間無符合嚴選條件之股票。")
-            print("➔ 今日此時無符合條件個股。")
             
         sys.exit(0)
 
