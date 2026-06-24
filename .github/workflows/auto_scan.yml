@@ -1,28 +1,34 @@
 name: Taiwan Stock 666 Scanner
 
 on:
+  workflow_dispatch: # 保持手動觸發功能
   schedule:
-    - cron: '30 1,2,3,4,5,6 * * 1-5'
-  workflow_dispatch:
+    # 🟢 台灣時間 09:00 到 13:00 的每個整點與半點 (對應 UTC 01:00 ~ 05:00)
+    # 包含：09:00, 09:30, 10:00, 10:30, 11:00, 11:30, 12:00, 12:30, 13:00
+    - cron: '0,30 1-5 * * 1-5'
+    
+    # 🟢 台灣時間 13:30 的收盤最後一筆精準加碼通報 (對應 UTC 05:30)
+    - cron: '30 5 * * 1-5'
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository
+    - name: Checkout repository
       uses: actions/checkout@v4
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip' # 啟用快取機制，加速後續的套件下載
 
-    - name: Install Dependencies
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        # 🛡️ 鐵血修復：完全移除不穩定的 pandas-ta，只留絕對健康的 4 大核心官方套件
-        pip install pandas yfinance requests lxml
-        
-    - name: Run Stock Scanner Script
-      run: python scanner_rising_point.py
+        pip install pandas yfinance requests lxml openpyxl
+
+    - name: Run Stock Scanner Radar
+      run: |
+        python scanner_rising_point.py
