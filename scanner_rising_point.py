@@ -36,7 +36,7 @@ try:
                 # 排除非普通股（只留4碼股票）
                 df = df[(~df["industry_category"].str.contains("ETF|債|憑證|證券|信託|存託憑證", na=True)) & (df["stock_id"].str.len() == 4)]
                 
-                # 過濾股本 < 50億 (FinMind 欄位為股票總張數 shares_issued，50億等同於 500,000,000股)
+                # 過濾股本 < 50億 (shares_issued < 5億股)
                 if "shares_issued" in df.columns:
                     df = df[df["shares_issued"] < 500000000]
                 
@@ -58,11 +58,10 @@ try:
         return {}
 
     # ==========================================
-    # 2. 核心 666 戰法運算邏輯 (加入布林通道與KD輸出)
+    # 2. 核心 666 戰法運算邏輯 (精準設定 K > 60)
     # ==========================================
     def calculate_666_strategy(df_60m, df_d):
         try:
-            # 統一欄位名稱
             if isinstance(df_60m.columns, pd.MultiIndex): df_60m.columns = [c[0].lower() for c in df_60m.columns]
             else: df_60m.columns = [c.lower() for c in df_60m.columns]
                 
@@ -71,7 +70,7 @@ try:
             
             if len(df_60m) < 100 or len(df_d) < 6: return None
             
-            # 條件 1: 近5日均量 > 1000張 (1,000,000股)
+            # 條件 1: 近5日均量 > 1000張
             vol_series = df_d["volume"].dropna()
             if vol_series.values[-5:].mean() < 1000000: return None
             
@@ -85,7 +84,7 @@ try:
             c_p = float(close_arr.iloc[-1])
             if c_p <= ma60: return None
             
-            # 💡【補回條件】：布林通道 (20, 2) 計算
+            # 布林通道 (20, 2) 計算
             ma20 = close_arr.rolling(20).mean()
             std20 = close_arr.rolling(20).std()
             upper_band = ma20 + (2 * std20)
@@ -110,7 +109,9 @@ try:
                 d_list.append(d)
                 
             kv, dv = k_list[-1], d_list[-1]
-            if kv <= dv: return None  # K值必須大於D值
+            
+            # 💡【核心條件修正】：60分線 KD 參數(60,3,3) 必須 K > 60，且保持 K > D 多頭型態
+            if kv <= 60 or kv <= dv: return None  
             
             # 條件 4: 原生 MACD (12, 26, 9) 計算
             ema12 = close_arr.ewm(span=12, adjust=False).mean()
@@ -119,7 +120,7 @@ try:
             dea = dif.ewm(span=9, adjust=False).mean()
             macd_hist = (dif - dea) * 2
             c_hist = float(macd_hist.iloc[-1])
-            if c_hist <= 0: return None  # MACD紅柱必須大於0
+            if c_hist <= 0: return None  
             
             # 條件 5: 原生 VR (26) 計算
             chg = close_arr.diff()
@@ -149,7 +150,7 @@ try:
     # 3. 主程式
     # ==========================================
     if __name__ == "__main__":
-        print("🚀 啟動【台股中小型股·原生精準雷達】...")
+        print("🚀 啟動【台股中小型股·666戰法精準雷達】...")
         stock_map = get_all_taiwan_stocks()
         all_yf_codes = list(stock_map.keys())
         total_count = len(all_yf_codes)
@@ -192,11 +193,10 @@ try:
                         sname = stock_map[ticker]["sname"]
                         results.append({"股票代碼": sid, "股票名稱": sname})
                         
-                        # 💡 重新排版 Telegram 訊息內容，完整呈現你所有的指標數據
                         msg_template = (
                             f"🎯 <b>{sid} {sname}</b>\n"
                             f" 🔹 現價: {res_strat['現價']} (60MA: {res_strat['60MA']})\n"
-                            f" 🔹 60分KD: K={res_strat['K值']} | D={res_strat['D值']}\n"
+                            f" 🔹 60分KD: K={res_strat['K值']} | D={res_strat['D值']} (K&gt;60)\n"
                             f" 🔹 MACD紅柱: {res_strat['MACD柱']}\n"
                             f" 🔹 VR值: {res_strat['VR值']}\n"
                             f" 🔹 布林通道: 上軌 {res_strat['布林上軌']} | 中軌 {res_strat['布林中軌']} | 下軌 {res_strat['布林下軌']}\n"
@@ -210,8 +210,8 @@ try:
             
         print("\n" + "=" * 50 + "\n🔊 掃描完畢\n" + "=" * 50)
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        send_tg_msg(f"🔔 <b>【台股 666 完整精準雷達回報】</b>\n⏰ 總鎖定(股本&lt;50億)：{total_count} 檔\n⏰ 時間：{now}\n------------------------\n" + ("\n------------------------\n".join(tg_msgs) if tg_msgs else "❌ 當前時間無符合條件股票。"))
-        print("➔ 精準過濾執行完畢！")
+        send_tg_msg(f"🔔 <b>【台股 666 精準雷達回報】</b>\n⏰ 總鎖定(股本&lt;50億)：{total_count} 檔\n⏰ 時間：{now}\n------------------------\n" + ("\n------------------------\n".join(tg_msgs) if tg_msgs else "❌ 當前時間無符合條件股票。"))
+        print("➔ K>60 精準過濾執行完畢！")
         sys.exit(0)
 
 except Exception as global_e:
