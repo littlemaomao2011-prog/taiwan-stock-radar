@@ -15,8 +15,8 @@ try:
     # ==========================================
     # 0. 設定您的 Telegram 資訊
     # ==========================================
-    TELEGRAM_TOKEN = "請在此輸入你的BotFather_Token"
-    TELEGRAM_CHAT_ID = "請在此輸入你的Telegram_Chat_ID"
+    TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
+    TELEGRAM_CHAT_ID = "5220963669"
 
     def send_tg_msg(msg):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
