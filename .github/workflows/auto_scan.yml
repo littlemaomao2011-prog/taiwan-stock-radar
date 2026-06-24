@@ -2,9 +2,8 @@ name: Taiwan Stock 666 Scanner
 
 on:
   schedule:
-    # 台灣週一至週五 09:30, 10:30, 11:30, 12:30, 13:30, 14:30
     - cron: '30 1,2,3,4,5,6 * * 1-5'
-  workflow_dispatch: # 手動執行按鈕
+  workflow_dispatch:
 
 jobs:
   run-scanner:
@@ -22,11 +21,7 @@ jobs:
     - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        # 🛡️ 鐵血修正：務必完整安裝 5 個核心套件，確保 KD、MACD、布林通道與官方網頁下載能順利執行
         pip install pandas yfinance requests pandas-ta lxml
         
     - name: Run Stock Scanner Script
-      env:
-        TG_TOKEN: ${{ secrets.TG_TOKEN }}
-        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
       run: python scanner_rising_point.py
