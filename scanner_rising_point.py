@@ -58,7 +58,7 @@ try:
         return {}
 
     # ==========================================
-    # 2. 核心 666 戰法運算邏輯 (精準設定 K > 60)
+    # 2. 核心 666 戰法運算邏輯 (黃金平衡微調版)
     # ==========================================
     def calculate_666_strategy(df_60m, df_d):
         try:
@@ -79,12 +79,17 @@ try:
             low_arr = df_60m["low"].squeeze().dropna()
             vol_arr = df_60m["volume"].squeeze().dropna()
             
+            # 💡【量能爆發微調】：當前 60分線量 > 20分均量的 1.5 倍
+            current_vol = float(vol_arr.iloc[-1])
+            ma20_vol = vol_arr.rolling(20).mean().iloc[-1]
+            if current_vol < (ma20_vol * 1.5): return None
+            
             # 條件 2: 價格在 60MA 之上
             ma60 = close_arr.rolling(60).mean().iloc[-1]
             c_p = float(close_arr.iloc[-1])
             if c_p <= ma60: return None
             
-            # 布林通道 (20, 2) 計算
+            # 💡【布林通道微調】：股價必須接近布林上軌（距離上軌 1% 以內，或已經突破上軌）
             ma20 = close_arr.rolling(20).mean()
             std20 = close_arr.rolling(20).std()
             upper_band = ma20 + (2 * std20)
@@ -94,7 +99,11 @@ try:
             m_b = float(ma20.iloc[-1])
             l_b = float(lower_band.iloc[-1])
             
-            # 條件 3: 原生 KD (60, 3, 3) 計算
+            # 檢查是否突破上軌，或者跟上軌的差距在 1% 以內
+            # (u_b - c_p) / c_p <= 0.01 代表距離上軌小於 1%
+            if c_p < u_b and ((u_b - c_p) / c_p > 0.01): return None
+            
+            # 條件 3: 原生 KD (60, 3, 3) 計算 (K > 60 且 K > D)
             low_60 = low_arr.rolling(60).min()
             high_60 = high_arr.rolling(60).max()
             rsv = ((close_arr - low_60) / (high_60 - low_60 + 1e-8)) * 100
@@ -109,8 +118,6 @@ try:
                 d_list.append(d)
                 
             kv, dv = k_list[-1], d_list[-1]
-            
-            # 💡【核心條件修正】：60分線 KD 參數(60,3,3) 必須 K > 60，且保持 K > D 多頭型態
             if kv <= 60 or kv <= dv: return None  
             
             # 條件 4: 原生 MACD (12, 26, 9) 計算
@@ -141,7 +148,9 @@ try:
                 "VR值": f"{round(vr26, 1)}%",
                 "布林上軌": round(u_b, 2),
                 "布林中軌": round(m_b, 2),
-                "布林下軌": round(l_b, 2)
+                "布林下軌": round(l_b, 2),
+                "當前分量": int(current_vol),
+                "均量1.5倍限制": round(ma20_vol * 1.5, 1)
             }
         except: pass
         return None
@@ -150,7 +159,7 @@ try:
     # 3. 主程式
     # ==========================================
     if __name__ == "__main__":
-        print("🚀 啟動【台股中小型股·666戰法精準雷達】...")
+        print("🚀 啟動【台股中小型股·黃金平衡雷達】...")
         stock_map = get_all_taiwan_stocks()
         all_yf_codes = list(stock_map.keys())
         total_count = len(all_yf_codes)
@@ -202,7 +211,7 @@ try:
                             f" 🔹 布林通道: 上軌 {res_strat['布林上軌']} | 中軌 {res_strat['布林中軌']} | 下軌 {res_strat['布林下軌']}\n"
                         )
                         tg_msgs.append(msg_template)
-                        print(f"🔥 [🎯飆股捕獲]：{sid} {sname}")
+                        print(f"🔥 [🎯黃金起漲點捕獲]：{sid} {sname}")
                 except: continue
                     
             print(f"⏳ 進度: {min(i + chunk_size, total_count)} / {total_count} 已完成...")
@@ -210,8 +219,8 @@ try:
             
         print("\n" + "=" * 50 + "\n🔊 掃描完畢\n" + "=" * 50)
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        send_tg_msg(f"🔔 <b>【台股 666 精準雷達回報】</b>\n⏰ 總鎖定(股本&lt;50億)：{total_count} 檔\n⏰ 時間：{now}\n------------------------\n" + ("\n------------------------\n".join(tg_msgs) if tg_msgs else "❌ 當前時間無符合條件股票。"))
-        print("➔ K>60 精準過濾執行完畢！")
+        send_tg_msg(f"🔔 <b>【台股 666 黃金平衡雷達回報】</b>\n⏰ 總鎖定(股本&lt;50億)：{total_count} 檔\n⏰ 時間：{now}\n------------------------\n" + ("\n------------------------\n".join(tg_msgs) if tg_msgs else "❌ 當前時間無符合黃金平衡條件之股票。"))
+        print("➔ 黃金平衡過濾執行完畢！")
         sys.exit(0)
 
 except Exception as global_e:
