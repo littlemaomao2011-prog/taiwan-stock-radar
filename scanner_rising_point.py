@@ -24,7 +24,7 @@ try:
         except: pass
 
     # ==========================================
-    # 1. 抓取全台灣上市櫃「所有」普通股 (股本 < 50億)
+    # 1. 抓取全台灣上市櫃「所有」普通股 (嚴格雙重封鎖 > 50億股本)
     # ==========================================
     def get_all_taiwan_stocks():
         print("📋 正在從 FinMind 載入全台股完整清單與股本資料...")
@@ -36,12 +36,17 @@ try:
                 # 排除非普通股（只留4碼股票）
                 df = df[(~df["industry_category"].str.contains("ETF|債|憑證|證券|信託|存託憑證", na=True)) & (df["stock_id"].str.len() == 4)]
                 
-                # 過濾股本 < 50億 (shares_issued < 5億股)
+                # 💡 強制轉換股本欄位型態，確保過濾 > 50億 (500,000,000股) 絕對生效
                 if "shares_issued" in df.columns:
+                    df["shares_issued"] = pd.to_numeric(df["shares_issued"], errors='coerce')
                     df = df[df["shares_issued"] < 500000000]
                 
-                heavy = ["2330", "2317", "2454", "2308", "2881", "2882", "2886", "2002"]
-                df = df[~df["stock_id"].isin(heavy)]
+                # 手動加入黑名單：直接剔除你剛才收到的大型股與權值股，雙重保險！
+                heavy_blacklist = [
+                    "1303", "1513", "1514", "2312", "2351", "2421", "2441", "5347", # 南亞、中興電、亞力、金寶、順德、建準、超豐、世界
+                    "2330", "2317", "2454", "2308", "2881", "2882", "2886", "2002"  # 台積電、鴻海等超大權值
+                ]
+                df = df[~df["stock_id"].isin(heavy_blacklist)]
                 
                 stock_dict = {}
                 for _, row in df.iterrows():
@@ -58,7 +63,7 @@ try:
         return {}
 
     # ==========================================
-    # 2. 核心 666 戰法運算邏輯 (黃金平衡微調版)
+    # 2. 核心 666 戰法運算邏輯 (加入 1.5倍量爆發 + 布林 0.5% 嚴選)
     # ==========================================
     def calculate_666_strategy(df_60m, df_d):
         try:
@@ -70,16 +75,17 @@ try:
             
             if len(df_60m) < 100 or len(df_d) < 6: return None
             
-            # 條件 1: 近5日均量 > 1000張
+            # 條件 1: 近5日均量 > 1000張 (1,000,000股)
             vol_series = df_d["volume"].dropna()
-            if vol_series.values[-5:].mean() < 1000000: return None
+            avg_vol_5d = vol_series.values[-5:].mean()
+            if avg_vol_5d < 1000000: return None
             
             close_arr = df_60m["close"].squeeze().dropna()
             high_arr = df_60m["high"].squeeze().dropna()
             low_arr = df_60m["low"].squeeze().dropna()
             vol_arr = df_60m["volume"].squeeze().dropna()
             
-            # 💡【量能爆發微調】：當前 60分線量 > 20分均量的 1.5 倍
+            # 💡【黃金量能爆發】：當前 60分線量 > 20分均量的 1.5 倍
             current_vol = float(vol_arr.iloc[-1])
             ma20_vol = vol_arr.rolling(20).mean().iloc[-1]
             if current_vol < (ma20_vol * 1.5): return None
@@ -89,19 +95,12 @@ try:
             c_p = float(close_arr.iloc[-1])
             if c_p <= ma60: return None
             
-            # 💡【布林通道微調】：股價必須接近布林上軌（距離上軌 1% 以內，或已經突破上軌）
+            # 💡【布林通道 0.5% 嚴選】：股價必須突破上軌，或者距離上軌極近（0.5% 以內）
             ma20 = close_arr.rolling(20).mean()
             std20 = close_arr.rolling(20).std()
             upper_band = ma20 + (2 * std20)
-            lower_band = ma20 - (2 * std20)
-            
             u_b = float(upper_band.iloc[-1])
-            m_b = float(ma20.iloc[-1])
-            l_b = float(lower_band.iloc[-1])
-            
-            # 檢查是否突破上軌，或者跟上軌的差距在 1% 以內
-            # (u_b - c_p) / c_p <= 0.01 代表距離上軌小於 1%
-            if c_p < u_b and ((u_b - c_p) / c_p > 0.01): return None
+            if c_p < u_b and ((u_b - c_p) / c_p > 0.005): return None
             
             # 條件 3: 原生 KD (60, 3, 3) 計算 (K > 60 且 K > D)
             low_60 = low_arr.rolling(60).min()
@@ -143,14 +142,9 @@ try:
                 "現價": round(c_p, 2), 
                 "60MA": round(ma60, 2), 
                 "K值": round(kv, 1),
-                "D值": round(dv, 1),
-                "MACD柱": round(c_hist, 3), 
+                "MACD柱": round(c_hist, 2), 
                 "VR值": f"{round(vr26, 1)}%",
-                "布林上軌": round(u_b, 2),
-                "布林中軌": round(m_b, 2),
-                "布林下軌": round(l_b, 2),
-                "當前分量": int(current_vol),
-                "均量1.5倍限制": round(ma20_vol * 1.5, 1)
+                "5日均量": int(avg_vol_5d / 1000)
             }
         except: pass
         return None
@@ -159,7 +153,7 @@ try:
     # 3. 主程式
     # ==========================================
     if __name__ == "__main__":
-        print("🚀 啟動【台股中小型股·黃金平衡雷達】...")
+        print("🚀 啟動【台股 60分線戰法·五合一精準嚴選雷達】...")
         stock_map = get_all_taiwan_stocks()
         all_yf_codes = list(stock_map.keys())
         total_count = len(all_yf_codes)
@@ -168,7 +162,7 @@ try:
             print("❌ 無法取得股票清單。")
             sys.exit(0)
             
-        print(f"🎯 成功鎖定「股本<50億」中小型台股共 {total_count} 檔。開始分流下載...")
+        print(f"🎯 成功鎖定嚴選中小型台股共 {total_count} 檔。開始進行分流下載...")
         
         results, tg_msgs = [], []
         chunk_size = 40
@@ -202,25 +196,24 @@ try:
                         sname = stock_map[ticker]["sname"]
                         results.append({"股票代碼": sid, "股票名稱": sname})
                         
-                        msg_template = (
-                            f"🎯 <b>{sid} {sname}</b>\n"
-                            f" 🔹 現價: {res_strat['現價']} (60MA: {res_strat['60MA']})\n"
-                            f" 🔹 60分KD: K={res_strat['K值']} | D={res_strat['D值']} (K&gt;60)\n"
-                            f" 🔹 MACD紅柱: {res_strat['MACD柱']}\n"
-                            f" 🔹 VR值: {res_strat['VR值']}\n"
-                            f" 🔹 布林通道: 上軌 {res_strat['布林上軌']} | 中軌 {res_strat['布林中軌']} | 下軌 {res_strat['布林下軌']}\n"
-                        )
+                        # 💡 完美複製您指定的單行易讀格式
+                        msg_template = f"🔹 {sid} {sname} | 現價: {res_strat['現價']} | 60MA: {res_strat['60MA']} | 60分K值: {res_strat['K值']} | VR: {res_strat['VR值']} | MACD柱: {res_strat['MACD柱']} | 5日日均量: {res_strat['5日均量']}張"
                         tg_msgs.append(msg_template)
-                        print(f"🔥 [🎯黃金起漲點捕獲]：{sid} {sname}")
+                        print(f"🔥 [嚴選飆股捕獲]：{sid} {sname}")
                 except: continue
                     
-            print(f"⏳ 進度: {min(i + chunk_size, total_count)} / {total_count} 已完成...")
-            time.sleep(0.3)
+            time.sleep(0.1)
             
-        print("\n" + "=" * 50 + "\n🔊 掃描完畢\n" + "=" * 50)
         now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-        send_tg_msg(f"🔔 <b>【台股 666 黃金平衡雷達回報】</b>\n⏰ 總鎖定(股本&lt;50億)：{total_count} 檔\n⏰ 時間：{now}\n------------------------\n" + ("\n------------------------\n".join(tg_msgs) if tg_msgs else "❌ 當前時間無符合黃金平衡條件之股票。"))
-        print("➔ 黃金平衡過濾執行完畢！")
+        header = f"📊 <b>台股 60分線戰法篩選結果 [五合一嚴選版] ({now})：</b>\n\n"
+        
+        if tg_msgs:
+            send_tg_msg(header + "\n".join(tg_msgs))
+            print(f"➔ 已發送 {len(tg_msgs)} 檔嚴選股票。")
+        else:
+            send_tg_msg(header + "❌ 當前時間無符合嚴選條件之股票。")
+            print("➔ 今日此時無符合條件個股。")
+            
         sys.exit(0)
 
 except Exception as global_e:
