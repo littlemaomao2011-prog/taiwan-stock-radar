@@ -1,32 +1,33 @@
-name: 台股 666 鐵血起漲點排程掃描
+name: Run Stock Scanner
 
 on:
   schedule:
-    # 台股盤中 9:30, 10:30, 11:30, 12:30, 13:30, 14:30 (每逢半點觸發)
-    # 轉換為國際標準時間 UTC 為：01:30, 02:30, 03:30, 04:30, 05:30, 06:30
-    - cron: '30 1-6 * * 1-5'
-  workflow_dispatch: # 允許手動點擊執行
+    # 這裡放你的定時排程設定
+    - cron: '30 1 * * 1-5' 
+  workflow_dispatch: # 允許手動觸發
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
 
     steps:
-    - name: 📥 複製專案代碼
+    # 1. 簽出程式碼 (升級至 v4)
+    - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: 🐍 設定 Python 環境
+    # 2. 設定 Python 環境 (升級至 v5，並移除錯誤的 python-modules)
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip' # 選填：加速後續執行
 
-    - name: 📦 安裝必要的技術指標套件
+    # 3. 正確安裝套件的步驟
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests pandas pandas-ta yfinance
+        pip install pandas pandas-ta yfinance requests
 
-    - name: 🚀 鐵血執行起漲雷達
-      env:
-        TG_TOKEN: ${{ secrets.TG_TOKEN }}
-        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-      run: python scanner_rising_point.py
+    # 4. 執行你的台股雷達程式
+    - name: Run Scanner Script
+      run: python your_script_name.py # 記得換成你的檔名
