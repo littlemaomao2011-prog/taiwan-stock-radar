@@ -5,8 +5,8 @@ import requests
 import logging
 import warnings
 import re
+import numpy as np
 import pandas as pd
-import pandas_ta as ta
 import yfinance as yf
 
 # 100% 靜音令與忽略警告通知
@@ -68,7 +68,6 @@ def get_all_taiwan_stocks_official():
         print(f"⚠️ 官方網頁連線受阻 ({e})，啟動「鐵血核心備援名單機制」！")
         stock_dict = {}
         
-    # 🛡️ 備援防爆網：萬一被證交所阻擋IP，直接使用主流中小型股群，確保程式永不崩潰亮紅燈！
     if len(stock_dict) == 0:
         backup_list = [
             ("6462", "神盾", "TWO"), ("6684", "安格", "TWO"), ("2495", "普安", "TW"),
@@ -92,7 +91,7 @@ def get_all_taiwan_stocks_official():
     return stock_dict
 
 # ==========================================
-# 2. 鐵血 666 戰法核心邏輯
+# 2. 鐵血 666 原生數學計算大腦（去套件化）
 # ==========================================
 def calculate_true_666_strategy(df_60m, df_d, ticker):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
@@ -103,40 +102,47 @@ def calculate_true_666_strategy(df_60m, df_d, ticker):
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
     if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 1000000: return None
         
-    c_ser = df_60m["Close"].squeeze()
-    h_ser = df_60m["High"].squeeze()
-    l_ser = df_60m["Low"].squeeze()
-    v_ser = df_60m["Volume"].squeeze()
-    o_ser = df_60m["Open"].squeeze()
+    c_ser = df_60m["Close"].squeeze().astype(float)
+    h_ser = df_60m["High"].squeeze().astype(float)
+    l_ser = df_60m["Low"].squeeze().astype(float)
+    v_ser = df_60m["Volume"].squeeze().astype(float)
+    o_ser = df_60m["Open"].squeeze().astype(float)
     
-    ma60_series = ta.sma(c_ser, length=60)
-    if ma60_series is None or len(ma60_series) == 0: return None
-    ma60 = ma60_series.iloc[-1]
+    # 計算 60MA
+    ma60 = c_ser.rolling(60).mean().iloc[-1]
+    if pd.isna(ma60): return None
     
-    kd_df = ta.stoch(high=h_ser, low=l_ser, close=c_ser, k=60, d=3, smooth_k=3)
-    if kd_df is None or len(kd_df) < 2: return None
-    k_col = [col for col in kd_df.columns if col.startswith("STOCHk")][0]
-    d_col = [col for col in kd_df.columns if col.startswith("STOCHd")][0]
-    kv = float(kd_df[k_col].iloc[-1])
-    dv = float(kd_df[d_col].iloc[-1])
+    # 原生計算 KD (60, 3, 3)
+    low_min = l_ser.rolling(60).min()
+    high_max = h_ser.rolling(60).max()
+    rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
+    
+    k_series = rsv.ewm(com=2, adjust=False).mean() # com=2 等同於 smooth_k=3
+    d_series = k_series.ewm(com=2, adjust=False).mean()
+    kv = float(k_series.iloc[-1])
+    dv = float(d_series.iloc[-1])
     if kv < 60.0: return None
     
-    macd_df = ta.macd(close=c_ser, fast=12, slow=26, signal=9)
-    if macd_df is None or len(macd_df) < 2: return None
-    macd_diff = float(macd_df.iloc[-1, 1])
+    # 原生計算 MACD (12, 26, 9)
+    ema12 = c_ser.ewm(span=12, adjust=False).mean()
+    ema26 = c_ser.ewm(span=26, adjust=False).mean()
+    dif = ema12 - ema26
+    dea = dif.ewm(span=9, adjust=False).mean()
+    macd_diff = float((dif - dea).iloc[-1])
     
+    # 原生計算 VR(26)
     chg = c_ser.diff()
     su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
     sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
     sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
-    if pd.isna(su) or pd.isna(sd) or pd.isna(sf): return None
     denom = 1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf)
     vr26 = ((su + 0.5 * sf) / denom) * 100
     
-    bb_df = ta.bbands(close=c_ser, length=20, std=2)
-    if bb_df is None or len(bb_df) < 2: return None
-    bb_upper = float(bb_df.iloc[-1, 2])
-    bb_middle = float(bb_df.iloc[-1, 1])
+    # 原生計算 布林通道 (20, 2)
+    ma20 = c_ser.rolling(20).mean()
+    std20 = c_ser.rolling(20).std()
+    bb_upper = float((ma20 + 2 * std20).iloc[-1])
+    bb_middle = float(ma20.iloc[-1])
     
     c_p = float(c_ser.iloc[-1])
     o_p = float(o_ser.iloc[-1])
@@ -161,7 +167,7 @@ def calculate_true_666_strategy(df_60m, df_d, ticker):
 # 3. 主程式流
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 戰法·雙保險抗阻擋雷達】...")
+    print("🚀 啟動【台股 666 戰法·純原生無套件抗阻擋雷達】...")
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
@@ -250,4 +256,4 @@ if __name__ == "__main__":
     out_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n------------------------\n"
     out_msg += "\n".join(tg_msgs) if tg_msgs else "❌ 目前市場無符合條件標的。"
     send_tg_msg(out_msg)
-    print("➔ 雙保險防禦版全市場掃描完畢！")
+    print("➔ 雙保險原生防禦版全市場掃描完畢！")
