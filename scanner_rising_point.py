@@ -117,7 +117,7 @@ def calculate_true_666_strategy(df_60m, df_d, ticker):
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
     
-    k_series = rsv.ewm(com=2, adjust=False).mean() # com=2 等同於 smooth_k=3
+    k_series = rsv.ewm(com=2, adjust=False).mean() 
     d_series = k_series.ewm(com=2, adjust=False).mean()
     kv = float(k_series.iloc[-1])
     dv = float(d_series.iloc[-1])
@@ -230,9 +230,9 @@ if __name__ == "__main__":
         print(lines[0])
         
         for idx, line in enumerate(lines[1:]):
+            row_data = df_report.iloc[idx]
             if idx < 3:
                 print(f"\033[41;37m{line}\033[0m")
-                row_data = df_report.iloc[idx]
                 tg_msgs.append(
                     f"🔥 <b>【菁英特攻·前三強】★ {row_data['代碼']} {row_data['名稱']} ★</b>\n"
                     f" 📈 現價: {row_data['現價']} (60MA: {row_data['60MA位置']} | 上軌: {row_data['布林上軌']})\n"
@@ -241,10 +241,10 @@ if __name__ == "__main__":
                 )
             else:
                 print(line)
-                row_data = df_report.iloc[idx]
+                # 🛠️ 終極解鎖：標準訊號股也同步展開完整資訊，並優化成精簡一行流，防文字爆炸截斷
                 tg_msgs.append(
-                    f"🚨 【標準 666 訊號】{row_data['代碼']} {row_data['名稱']}\n"
-                    f" 📈 現價: {row_data['現價']} (量比: {row_data['小時量比']} | VR: {row_data['VR值']})\n"
+                    f"🚨 <b>【標準 666】{row_data['代碼']} {row_data['名稱']}</b>\n"
+                    f" ➔ 價: {row_data['現價']} | MA: {row_data['60MA位置']} | 軌: {row_data['布林上軌']} | 量比: {row_data['小時量比']} | VR: {row_data['VR值']} | KD: {row_data['60分K值']}>{row_data['60分D值']} | 柱: {row_data['MACD柱']}\n"
                 )
     else:
         print("❌ 檢查完畢：目前市場上沒有任何股票符合條件。")
@@ -256,4 +256,4 @@ if __name__ == "__main__":
     out_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n------------------------\n"
     out_msg += "\n".join(tg_msgs) if tg_msgs else "❌ 目前市場無符合條件標的。"
     send_tg_msg(out_msg)
-    print("➔ 雙保險原生防禦版全市場掃描完畢！")
+    print("➔ 全功能完整細節展開版全市場掃描完畢！")
