@@ -139,7 +139,7 @@ def fetch_stock_list():
     return stocks
 
 # ==============================================================================
-# 核心防線 4：智慧時間大腦判斷（🚀 語法已 100% 修復驗證完成）
+# 核心防線 4：智慧時間大腦判斷
 # ==============================================================================
 def get_market_time_info():
     """辨識台股當前時段與動態時間放大係數"""
@@ -147,7 +147,6 @@ def get_market_time_info():
     now = datetime.datetime.now(tz)
     
     is_after_market = False
-    # 💡 完美修復：補齊因複製被意外截斷的 time() 邏輯與括號冒號
     if now.weekday() >= 5 or now.time() >= datetime.time(14, 30) or now.time() < datetime.time(9, 0):
         is_after_market = True
         
@@ -160,32 +159,4 @@ def get_market_time_info():
     print(f"[+] 步驟 3: 當前台灣時間 {now.strftime('%Y-%m-%d %H:%M:%S')}，觸發 {mode_str}")
     return is_after_market, vol_multiplier, now.strftime("%Y-%m-%d")
 
-# ==============================================================================
-# 核心防線 3 & 4 & 5：個股多因子洗滌與計分引擎
-# ==============================================================================
-def scan_single_stock(stock_code, stock_info, is_after_market, vol_multiplier):
-    """雙層漏斗核心演算法：過濾日K、60分K、VR階梯與計分"""
-    try:
-        df_d = yf.download(stock_code, period="45d", interval="1d", progress=False, auto_adjust=True)
-        df_60m = yf.download(stock_code, period="30d", interval="60m", progress=False, auto_adjust=True)
-        
-        if len(df_60m) < 80 or len(df_d) < 20:
-            return None
-            
-        df_d = df_d.bfill().ffill()
-        df_60m = df_60m.bfill().ffill()
-        df_d.columns = [c[0] if isinstance(c, tuple) else c for c in df_d.columns]
-        df_60m.columns = [c[0] if isinstance(c, tuple) else c for c in df_60m.columns]
-        
-        if is_after_market and df_60m["Volume"].iloc[-1] == 0:
-            df_60m = df_60m.iloc[:-1]
-        if is_after_market and df_d["Volume"].iloc[-1] == 0:
-            df_d = df_d.iloc[:-1]
-
-        # 漏斗：流動性限制
-        if df_d["Volume"].iloc[-5:].mean() < 500000:
-            return None
-            
-        current_price = df_60m["Close"].iloc[-1]
-        day_open = df_d["Open"].iloc[-1]
-        day_
+#
