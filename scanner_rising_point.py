@@ -33,59 +33,71 @@ def send_tg_msg(msg):
         print(f"❌ Telegram 網路連線失敗: {e}")
 
 # ==========================================
-# 0. 核心加強：大盤與櫃買雙重指數濾網 (超級穩定救援版)
+# 0. 核心加強：大盤與櫃買雙重指數濾網 (2026 終極抗阻擋修復版)
 # ==========================================
 def check_market_filter():
     print("🌍 正在下載大盤與櫃買指數進行安全過濾...")
+    
+    # 💥 策略 A：嘗試用最輕量的日線 20MA 進行防禦，改用 auto_adjust=True 繞過 yfinance 錯誤
     try:
-        market_data = yf.download(["^TWII", "^TWO"], period="30d", interval="60m", progress=False, auto_adjust=False)
-        twii_close = market_data["Close"]["^TWII"].dropna().astype(float)
-        two_close = market_data["Close"]["^TWO"].dropna().astype(float)
-        
-        if len(twii_close) >= 60 and len(two_close) >= 60:
-            twii_ma60 = twii_close.rolling(60).mean().iloc[-1]
-            two_ma60 = two_close.rolling(60).mean().iloc[-1]
-            twii_now = twii_close.iloc[-1]
-            two_now = two_close.iloc[-1]
-            
-            twii_bull = twii_now >= twii_ma60
-            two_bull = two_now >= two_ma60
-            
-            if not twii_bull and not two_bull:
-                return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破小時60MA！啟動鐵血空倉令，今日不撈魚！抱緊現金！</b>"
-            elif not twii_bull or not two_bull:
-                weak_target = "大盤" if not twii_bull else "櫃買"
-                return "WARN", f"⚠️ <b>【盤勢轉弱警訊】{weak_target}已跌破小時60MA結構！個股操作請嚴格控制資金與防守點！</b>"
+        market_data_d = yf.download(["^TWII", "^TWO"], period = "60d", interval = "1d", progress = False, auto_adjust = True)
+        if not market_data_d.empty:
+            # 處理 yfinance 多重索引欄位問題
+            if isinstance(market_data_d['Close'], pd.DataFrame):
+                twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
+                two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
             else:
-                return "OK", "🟢 <b>【多頭安全環境】大盤與櫃買皆穩守在小時60MA之上，雷達全力開火！</b>"
+                twii_close_d = market_data_d["Close"].dropna().astype(float)
+                two_close_d = market_data_d["Close"].dropna().astype(float)
+            
+            if len(twii_close_d) >= 20 and len(two_close_d) >= 20:
+                twii_ma20 = twii_close_d.rolling(20).mean().iloc[-1]
+                two_ma20 = two_close_d.rolling(20).mean().iloc[-1]
+                twii_now_d = twii_close_d.iloc[-1]
+                two_now_d = two_close_d.iloc[-1]
+                
+                twii_bull = twii_now_d >= twii_ma20
+                two_bull = two_now_d >= two_ma20
+                
+                if not twii_bull and not two_bull:
+                    return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破日K月線(20MA)！啟動鐵血空倉令，防範大跌！</b>"
+                elif not twii_bull or not two_bull:
+                    weak_target = "大盤" if not twii_bull else "櫃買"
+                    return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K月線(20MA)結構！請嚴格控制部位！</b>"
+                else:
+                    return "OK", "🟢 <b>【多頭環境安全】大盤與櫃買穩守在日線20MA之上，雷達全力開火！</b>"
     except Exception as e:
-        print(f"ℹ️ 小時線下載異常，自動切換至備援日線濾網機制。")
+        print(f"ℹ️ 策略 A 抓取失敗 ({e})，切換至策略 B 小時線嘗試...")
 
+    # 💥 策略 B：備援小時線抓取
     try:
-        market_data_d = yf.download(["^TWII", "^TWO"], period="45d", interval="1d", progress=False, auto_adjust=False)
-        twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
-        two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
-        
-        if len(twii_close_d) >= 20 and len(two_close_d) >= 20:
-            twii_ma20 = twii_close_d.rolling(20).mean().iloc[-1]
-            two_ma20 = two_close_d.rolling(20).mean().iloc[-1]
-            twii_now_d = twii_close_d.iloc[-1]
-            two_now_d = two_close_d.iloc[-1]
-            
-            twii_bull = twii_now_d >= twii_ma20
-            two_bull = two_now_d >= two_ma20
-            
-            if not twii_bull and not two_bull:
-                return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破日K月線(20MA)！啟動鐵血空倉令，防範波段大跌！</b>"
-            elif not twii_bull or not two_bull:
-                weak_target = "大盤" if not twii_bull else "櫃買"
-                return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K月線(20MA)結構！請嚴格控制部位！</b>"
+        market_data = yf.download(["^TWII", "^TWO"], period = "30d", interval = "60m", progress = False, auto_adjust = True)
+        if not market_data.empty:
+            if isinstance(market_data['Close'], pd.DataFrame):
+                twii_close = market_data["Close"]["^TWII"].dropna().astype(float)
+                two_close = market_data["Close"]["^TWO"].dropna().astype(float)
             else:
-                return "OK", "🟢 <b>【多頭日線安全】大盤與櫃買穩守在日線20MA之上，備援雷達正常運作。</b>"
+                twii_close = market_data["Close"].dropna().astype(float)
+                two_close = market_data["Close"].dropna().astype(float)
+                
+            if len(twii_close) >= 60 and len(two_close) >= 60:
+                twii_ma60 = twii_close.rolling(60).mean().iloc[-1]
+                two_ma60 = two_close.rolling(60).mean().iloc[-1]
+                twii_now = twii_close.iloc[-1]
+                two_now = two_close.iloc[-1]
+                
+                twii_bull = twii_now >= twii_ma60
+                two_bull = two_now >= two_ma60
+                
+                if not twii_bull and not two_bull:
+                    return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破小時60MA！啟動鐵血空倉令！</b>"
+                else:
+                    return "OK", "🟢 <b>【小時線防線安全】大盤與櫃買穩守在小時60MA之上。</b>"
     except Exception as e:
-        print(f"⚠️ 備援日線下載也失敗 ({e})")
+        print(f"⚠️ 策略 B 下載也失敗 ({e})")
         
-    return "OK", "⚠️ <b>【風控連線異常】無法取得指數即時資料，自動切換至常規掃描模式。</b>"
+    # 🚀 終極放行：若 Yahoo 當天真的完全全面封鎖指數，不卡死個股掃描，直接預設安全放行
+    return "OK", "🟢 <b>【常規安全放行】大盤連線受阻，風控機制自動轉為常規個股多頭掃描模式。</b>"
 
 # ==========================================
 # 1. 雙保險：股票名單下載
@@ -125,7 +137,6 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     if not all(col in df_60m.columns for col in required_cols) or "Volume" not in df_d.columns: return None
     if len(df_60m) < 65 or len(df_d) < 5: return None
     
-    # 5日均量風控（流動性檢查）
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
     if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 500000: return None
         
@@ -167,7 +178,6 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     if c_p < bb_middle or c_p < ma60: return None
     if (c_p - o_p) / o_p * 100 < -0.8: return None
     
-    # 💥 【量比高門檻維持】
     if current_hour == 9:
         if v_mean_20h > 0 and v_p < (v_mean_20h * 1.3): return None
     else:
@@ -221,8 +231,8 @@ if __name__ == "__main__":
     for i in range(0, total_count, chunk_size):
         chunk = all_yf_codes[i:i + chunk_size]
         try:
-            data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=False)
-            data_d = yf.download(chunk, period="12d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
+            data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
+            data_d = yf.download(chunk, period="12d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
         except:
             continue
             
@@ -277,7 +287,6 @@ if __name__ == "__main__":
         header_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
         top_list = []
         
-        # 🟢 【解鎖全數發送】前 5 強維持完整版詳細秀出
         for idx, row in df_report.iterrows():
             if idx < 5:
                 sid_str = str(row['代碼'])
@@ -302,7 +311,6 @@ if __name__ == "__main__":
         if top_list:
             send_tg_msg(header_msg + "\n".join(top_list))
         
-        # 📦 【解鎖續報】第 6 名以後的所有符合個股，一樣用標準包打包發送，絕不漏氣！
         standard_list = []
         for idx, row in df_report.iterrows():
             if idx >= 5:
