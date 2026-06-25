@@ -13,17 +13,13 @@ jobs:
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v3
-      with:
-        persist-credentials: true
+      uses: actions/checkout@v4 # 🚀 已修正：升級至 v4 以支援最新 Node.js
 
     - name: Set up Python 3.10
-      uses: actions/setup-python@v4
-      with:
-        python-version: "3.10"
+      uses: actions/setup-python@v5 # 🚀 已修正：升級至 v5 以支援最新 Node.js
 
     - name: Cache Pip Packages
-      uses: actions/cache@v3
+      uses: actions/cache@v4 # 🚀 已修正：升級至 v4 以支援最新 Node.js
       with:
         path: ~/.cache/pip
         key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
