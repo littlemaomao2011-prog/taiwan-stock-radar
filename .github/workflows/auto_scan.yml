@@ -2,51 +2,48 @@ name: Taiwan Stock 666 Scanner
 
 on:
   schedule:
-    # 修正後的 5 位數標準 cron 語法（已換算為台灣時間 09:05 ~ 13:20 盤中每 20-30 分鐘執行）
-    - cron: '5 1 * * *'  # 台灣時間 09:05
-    - cron: '30 1 * * *' # 台灣時間 09:30
-    - cron: '50 1 * * *' # 台灣時間 09:50
-    - cron: '15 2 * * *' # 台灣時間 10:15
-    - cron: '35 2 * * *' # 台灣時間 10:35
-    - cron: '0 3 * * *'  # 台灣時間 11:00
-    - cron: '30 3 * * *' # 台灣時間 11:30
-    - cron: '0 4 * * *'  # 台灣時間 12:00
-    - cron: '30 4 * * *' # 台灣時間 12:30
-    - cron: '0 5 * * *'  # 台灣時間 13:00
-    - cron: '20 5 * * *' # 台灣時間 13:20
-  workflow_dispatch: # 保持手動測試按鈕
+    # 💡 完美對齊台股盤中時間（轉換為 UTC 時間）
+    - cron: '5 1 * * 1-5'   # 09:05
+    - cron: '30 1 * * 1-5'  # 09:30
+    - cron: '50 1 * * 1-5'  # 09:50
+    - cron: '15 2 * * 1-5'  # 10:15
+    - cron: '35 2 * * 1-5'  # 10:35
+    - cron: '0 3 * * 1-5'   # 11:00
+    - cron: '30 3 * * 1-5'  # 11:30
+    - cron: '0 4 * * 1-5'   # 12:00
+    - cron: '30 4 * * 1-5'  # 12:30
+    - cron: '0 5 * * 1-5'   # 13:00
+    - cron: '20 5 * * 1-5'  # 13:20
+  workflow_dispatch:        # 保留手動點擊執行的按鈕
 
 jobs:
-  run-scanner:
+  scan:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write       # 允許程式更新記憶檔案並推回倉庫
 
     steps:
-    - name: Checkout Repository
+    - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        persist-credentials: true
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
 
-    - name: Install Dependencies
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install requests pandas numpy yfinance lxml html5lib beautifulsoup4
+        pip install yfinance pandas numpy requests lxml openpyxl
 
-    - name: Run Stock Scanner Radar
+    - name: Run scanner
       run: python scanner_rising_point.py
 
-    - name: Save Run Memory to Repo
+    - name: Commit and Push memory changes
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         if [ -f stock_memory.csv ]; then
           git add stock_memory.csv
-          git commit -m "💾 自動記分板：更新今日霸榜計數器 [skip ci]" || echo "沒有新改動"
-          git push origin main || echo "推回失敗"
+          git diff --quiet && git diff --staged --quiet || (git commit -m "💾 自動更新盤中記憶數據 [skip ci]" && git push)
         fi
