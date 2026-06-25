@@ -20,19 +20,19 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # ⚡ 2026核心關鍵：必須明確授權雲端寫入權限，否則會噴 Exit code 1
+      contents: write       # 允許雲端寫入權限
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        persist-credentials: true # ⚡ 保持認證狀態，允許回傳更新記憶檔
+        persist-credentials: true # 保持認證狀態
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-        cache: 'pip'        # 自動快取，避免重複下載拖慢速度
+        cache: 'pip'
 
     - name: Install dependencies
       run: |
@@ -41,7 +41,7 @@ jobs:
 
     - name: Run scanner
       env:
-        PYTHONUNBUFFERED: "1" # 確保所有的 print 紀錄能即時完全印出，方便 Debug
+        PYTHONUNBUFFERED: "1"
       run: python scanner_rising_point.py
 
     - name: Commit and Push memory changes
@@ -49,16 +49,21 @@ jobs:
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # 防呆機制：若記憶檔案不存在，自動建立一個空的，避免後續指令因找不到檔案而 Exit code 1
+        # 防呆機制：若記憶檔案不存在，自動建立一個空的
         if [ ! -f stock_memory.csv ]; then
           echo "stock_id,last_run,total_count" > stock_memory.csv
         fi
         
         git add stock_memory.csv
-        # 檢查是否有真正的檔案變動，如果有才進行 commit & push，完全避開無意義的報錯
+        
+        # 檢查是否有真正的檔案變動
         if ! git diff --quiet --staged; then
           git commit -m "💾 自動更新盤中記憶數據 [skip ci]"
-          git push
+          
+          # ⚡【修復核心關鍵】在 push 之前先拉取並衍合主人最新修改的程式碼，徹底解決衝突問題
+          git pull --rebase origin main
+          
+          git push origin main
         else
           echo "ℹ️ 數據無變動，跳過推送。"
         fi
