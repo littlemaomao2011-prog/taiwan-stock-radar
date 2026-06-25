@@ -2,6 +2,7 @@ name: Taiwan Stock 666 Scanner
 
 on:
   schedule:
+    # 台灣時間週一至週五盤中每 20-30 分鐘自動執行
     - cron: '05 1' # 09:05
     - cron: '30 1' # 09:30
     - cron: '50 1' # 09:50
@@ -13,7 +14,7 @@ on:
     - cron: '30 4' # 12:30
     - cron: '00 5' # 13:00
     - cron: '20 5' # 13:20
-  workflow_dispatch:
+  workflow_dispatch: # 保持手動測試按鈕
 
 jobs:
   run-scanner:
