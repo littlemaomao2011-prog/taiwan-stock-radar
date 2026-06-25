@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 import yfinance as yf
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 100% 靜音令與忽略警告通知
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
@@ -33,7 +34,7 @@ def send_tg_msg(msg):
         print(f"❌ Telegram 網路連線失敗: {e}")
 
 # ==========================================
-# 0. 大盤與櫃買雙重指數濾網
+# 0. 大盤與櫃買雙重指數風控
 # ==========================================
 def check_market_filter():
     print("🌍 正在下載大盤與櫃買指數進行安全過濾...")
@@ -68,7 +69,7 @@ def check_market_filter():
     return "OK", "🟢 <b>【常規安全放行】大盤連線受阻，自動轉為常規個股多頭掃描模式。</b>"
 
 # ==========================================
-# 1. 雙保險：股票名單下載
+# 1. 股票名單下載
 # ==========================================
 def get_all_taiwan_stocks_official():
     stock_dict = {}
@@ -98,37 +99,50 @@ def get_all_taiwan_stocks_official():
     return stock_dict
 
 # ==========================================
-# 2. 鐵血 666 + 道氏理論形態大腦
+# 2. 魔改核心：鐵血 666 + 道氏形態 + 乖離防追高大腦
 # ==========================================
 def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols) or "Volume" not in df_d.columns: return None
     if len(df_60m) < 65 or len(df_d) < 20: return None
     
-    # 流動性風控：5日均量
+    # 5日均量風控
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
     if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 500000: return None
         
-    # 🏛️ 【核心新增：道氏理論日K形態分析】
     d_close = df_d["Close"].squeeze().astype(float)
     d_high = df_d["High"].squeeze().astype(float)
     d_low = df_d["Low"].squeeze().astype(float)
+    d_open = df_d["Open"].squeeze().astype(float)
     
-    # 透過滾動窗口找出波段關鍵高低點（道氏波段結構）
+    current_now_price = d_close.iloc[-1]
+    
+    # 🛑 【魔改功能 A：當日漲幅與5MA乖離率防追高風控】
+    today_open = d_open.iloc[-1]
+    today_pct = ((current_now_price - today_open) / today_open) * 100
+    if today_pct > 8.5: return None  # ❌ 當天開盤到現在已經噴超過 8.5% 接近漲停，放棄追高！
+    
+    ma5_d = d_close.tail(5).mean()
+    bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100
+    if bias_5ma > 8.0: return None  # ❌ 股價遠離 5日均線 乖離率 > 8%，過熱不追！
+    
+    # 🏛️ 【道氏理論日K形態分析】
     recent_lows = d_low.tail(20)
     recent_highs = d_high.tail(20)
     
-    # 計算前一個區間的波段低點與高點
-    prior_low = recent_lows.head(15).min()   # 過去前段的低點
-    current_low = recent_lows.tail(5).min()   # 轉折近期的低點
-    prior_high = recent_highs.head(15).max()  # 過去前段的高點
-    current_now_price = d_close.iloc[-1]       # 今日現價
+    prior_low = recent_lows.head(15).min()   
+    current_low = recent_lows.tail(5).min()   
+    prior_high = recent_highs.head(15).max()  
     
-    # 道氏理論過濾：必須滿足「底底高 (近期低點未跌破前波低點)」且「現價已挑戰或高於前波高點」
-    if current_low < prior_low: return None            # ❌ 跌破前低，屬於破底股，淘汰！
-    if current_now_price < (prior_high * 0.96): return None  # ❌ 距離前高太遙遠，無突破意願，淘汰！
+    if current_low < prior_low: return None            # ❌ 破底股淘汰
+    if current_now_price < (prior_high * 0.96): return None  # ❌ 離前高太遠無攻擊意願淘汰
     
-    # ------------------ 進入原 60分K 核心 666 指標計算 ------------------
+    # 🎯 【魔改功能 B：自動試算道氏前波低點防守價】
+    # 實戰上以近 20 天的波段最低點（即 prior_low 或近期轉折低點）作為嚴格防守停損點
+    stop_loss_price = round(min(prior_low, current_low), 2)
+    risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
+    
+    # ------------------ 60分K 核心 666 指標計算 ------------------
     c_ser = df_60m["Close"].squeeze().astype(float)
     h_ser = df_60m["High"].squeeze().astype(float)
     l_ser = df_60m["Low"].squeeze().astype(float)
@@ -167,7 +181,6 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     if c_p < bb_middle or c_p < ma60: return None
     if (c_p - o_p) / o_p * 100 < -0.8: return None
     
-    # 高爆量門檻維持
     if current_hour == 9:
         if v_mean_20h > 0 and v_p < (v_mean_20h * 1.3): return None
     else:
@@ -180,15 +193,52 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
             "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
             "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍",
             "K值": round(kv, 1), "D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
-            "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "道氏形態": dow_status
+            "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "道氏形態": dow_status,
+            "防守價": stop_loss_price, "預估風險": f"{risk_pct}%"
         }
     return None
 
 # ==========================================
-# 3. 主程式流
+# 3. ⚡ 魔改功能 C：多執行緒平行高速下載核心
 # ==========================================
+def download_and_scan_chunk(chunk, stock_map, current_hour):
+    local_results = []
+    try:
+        data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
+        data_d = yf.download(chunk, period="35d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
+    except:
+        return local_results
+
+    for ticker in chunk:
+        try:
+            if ticker not in data_60m.columns.get_level_values(0) or ticker not in data_d.columns.get_level_values(0): continue
+            df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
+            df_stock_d = data_d[ticker].dropna(subset=["Close"])
+            if df_stock_60m.empty or df_stock_d.empty: continue
+            
+            df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
+            df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
+            
+            res_strat = calculate_true_666_strategy(df_stock_60m, df_stock_d, ticker, current_hour)
+            if res_strat:
+                sid = stock_map[ticker]["sid"]
+                sname = stock_map[ticker]["sname"]
+                score = res_strat["小時量比數字"] * 10 + (50 if 150.0 <= res_strat["VR值數字"] <= 400.0 else -30)
+                
+                local_results.append({
+                    "代碼": sid, "名稱": sname, "現價": res_strat["現價"], 
+                    "60MA位置": res_strat["60MA位置"], "布林上軌": res_strat["布林上軌"], 
+                    "60分K值": res_strat["K值"], "60分D值": res_strat["D值"],
+                    "MACD柱": res_strat["MACD柱"], "小時量比": res_strat["小時量比"], 
+                    "VR值": res_strat["VR值"], "score": score, "量比數字": res_strat["小時量比數字"],
+                    "道氏形態": res_strat["道氏形態"], "防守價": res_strat["防守價"], "預估風險": res_strat["預估風險"]
+                })
+        except:
+            continue
+    return local_results
+
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 戰法·道氏形態戰略雷達】...")
+    print("🚀 啟動【台股 666 × 道氏波段 · 終極重裝平行加速雷達】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -216,44 +266,19 @@ if __name__ == "__main__":
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
     
+    # ⚡ 升級多線程分組
     chunk_size = 40  
-    for i in range(0, total_count, chunk_size):
-        chunk = all_yf_codes[i:i + chunk_size]
-        try:
-            data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
-            data_d = yf.download(chunk, period="35d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
-        except:
-            continue
-            
-        for ticker in chunk:
-            try:
-                if ticker not in data_60m.columns.get_level_values(0) or ticker not in data_d.columns.get_level_values(0): continue
-                df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
-                df_stock_d = data_d[ticker].dropna(subset=["Close"])
-                if df_stock_60m.empty or df_stock_d.empty: continue
-                
-                df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
-                df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
-                
-                res_strat = calculate_true_666_strategy(df_stock_60m, df_stock_d, ticker, current_hour)
-                if res_strat:
-                    sid = stock_map[ticker]["sid"]
-                    sname = stock_map[ticker]["sname"]
-                    score = res_strat["小時量比數字"] * 10 + (50 if 150.0 <= res_strat["VR值數字"] <= 400.0 else -30)
-                    
-                    results.append({
-                        "代碼": sid, "名稱": sname, "現價": res_strat["現價"], 
-                        "60MA位置": res_strat["60MA位置"], "布林上軌": res_strat["布林上軌"], 
-                        "60分K值": res_strat["K值"], "60分D值": res_strat["D值"],
-                        "MACD柱": res_strat["MACD柱"], "小時量比": res_strat["小時量比"], 
-                        "VR值": res_strat["VR值"], "score": score, "量比數字": res_strat["小時量比數字"],
-                        "道氏形態": res_strat["道氏形態"]
-                    })
-            except:
-                continue
-        time.sleep(0.05)
+    chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, total_count, chunk_size)]
+    
+    print(f"⚡ 啟動平行運算，共切分 {len(chunks)} 個任務同步發射...")
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(download_and_scan_chunk, chunk, stock_map, current_hour): chunk for chunk in chunks}
+        for future in as_completed(futures):
+            chunk_res = future.result()
+            if chunk_res:
+                results.extend(chunk_res)
         
-    print(f"\n🔊 掃描完畢，共篩選出 {len(results)} 檔符合條件標的。")
+    print(f"\n🔊 高速掃描完畢，共篩選出 {len(results)} 檔符合條件標的。")
     
     if results:
         df_report = pd.DataFrame(results)
@@ -269,13 +294,12 @@ if __name__ == "__main__":
                 df_mem.loc[df_mem["stock_id"] == sid, "last_run"] = 1
             else:
                 new_row = pd.DataFrame([{"stock_id": sid, "last_run": 1, "total_count": 1}])
-                git_df = pd.concat([df_mem, new_row], ignore_index=True)
-                df_mem = git_df
+                df_mem = pd.concat([df_mem, new_row], ignore_index=True)
         
         valid_counts = df_mem[df_mem["total_count"] >= 2]["total_count"].values
         top_threshold = np.sort(valid_counts)[-3] if len(valid_counts) >= 3 else (np.min(valid_counts) if len(valid_counts) > 0 else 999)
         
-        header_msg = f"🔔 <b>【台股 666 ⚖️ 道氏形態戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
+        header_msg = f"🔔 <b>【台股 666 ⚔️ 終極重裝戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
         top_list = []
         
         for idx, row in df_report.iterrows():
@@ -295,6 +319,7 @@ if __name__ == "__main__":
                     f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
                     f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
                     f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
+                    f" 🎯 <b>鐵血防守點: {row['防守價']} (預估風險潛在跌幅: {row['預估風險']})</b>\n"
                 )
         
         if top_list:
@@ -312,8 +337,8 @@ if __name__ == "__main__":
                 elif sid_str not in last_run_sids and len(last_run_sids) > 0: tag = " 🆕[新進榜]"
                     
                 standard_list.append(
-                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']}</b> ({row['道氏形態']}){tag}\n"
-                    f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | VR: {row['VR值']} | KD: {row['60分K值']}>{row['60分D值']}"
+                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']}</b>\n"
+                    f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | 防守: {row['防守價']} ({row['預估風險']})"
                 )
                 if len(standard_list) == 15:
                     send_tg_msg(f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list))
@@ -324,4 +349,4 @@ if __name__ == "__main__":
             
         df_mem.to_csv(memory_file, index=False)
     else:
-        send_tg_msg(f"🔔 <b>【台股 666 ⚖️ 道氏形態戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高且爆量」之標的。")
+        send_tg_msg(f"🔔 <b>【台股 666 ⚔️ 終極重裝戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、未過熱且爆量起漲」之標的。")
