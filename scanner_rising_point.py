@@ -33,7 +33,7 @@ def send_tg_msg(msg):
         print(f"❌ Telegram 網路連線失敗: {e}")
 
 # ==========================================
-# 0. 核心加強：大盤與櫃買雙重指數濾網
+# 0. 核心加強：大盤與櫃買雙重指數濾網 (超級穩定救援版)
 # ==========================================
 def check_market_filter():
     print("🌍 正在下載大盤與櫃買指數進行安全過濾...")
@@ -42,26 +42,50 @@ def check_market_filter():
         twii_close = market_data["Close"]["^TWII"].dropna().astype(float)
         two_close = market_data["Close"]["^TWO"].dropna().astype(float)
         
-        if len(twii_close) < 60 or len(two_close) < 60:
-            return "OK", "⚠️ 指數資料不足，跳過濾網判定"
+        if len(twii_close) >= 60 and len(two_close) >= 60:
+            twii_ma60 = twii_close.rolling(60).mean().iloc[-1]
+            two_ma60 = two_close.rolling(60).mean().iloc[-1]
+            twii_now = twii_close.iloc[-1]
+            two_now = two_close.iloc[-1]
             
-        twii_ma60 = twii_close.rolling(60).mean().iloc[-1]
-        two_ma60 = two_close.rolling(60).mean().iloc[-1]
-        twii_now = twii_close.iloc[-1]
-        two_now = two_close.iloc[-1]
-        
-        twii_bull = twii_now >= twii_ma60
-        two_bull = two_now >= two_ma60
-        
-        if not twii_bull and not two_bull:
-            return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破小時60MA！啟動鐵血空倉令，今日不撈魚！抱緊現金！</b>"
-        elif not twii_bull or not two_bull:
-            weak_target = "大盤" if not twii_bull else "櫃買"
-            return "WARN", f"⚠️ <b>【盤勢轉弱警訊】{weak_target}已跌破小時60MA結構！個股操作請嚴格控制資金與防守點！</b>"
-        else:
-            return "OK", "🟢 <b>【多頭安全環境】大盤與櫃買皆穩守在小時60MA之上，雷達全力開火！</b>"
+            twii_bull = twii_now >= twii_ma60
+            two_bull = two_now >= two_ma60
+            
+            if not twii_bull and not two_bull:
+                return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破小時60MA！啟動鐵血空倉令，今日不撈魚！抱緊現金！</b>"
+            elif not twii_bull or not two_bull:
+                weak_target = "大盤" if not twii_bull else "櫃買"
+                return "WARN", f"⚠️ <b>【盤勢轉弱警訊】{weak_target}已跌破小時60MA結構！個股操作請嚴格控制資金與防守點！</b>"
+            else:
+                return "OK", "🟢 <b>【多頭安全環境】大盤與櫃買皆穩守在小時60MA之上，雷達全力開火！</b>"
     except Exception as e:
-        return "OK", "⚠️ 指數網路連線異常，自動切換至普通掃描模式。"
+        print(f"ℹ️ 小時線下載異常，自動切換至備援日線濾網機制。")
+
+    try:
+        market_data_d = yf.download(["^TWII", "^TWO"], period="45d", interval="1d", progress=False, auto_adjust=False)
+        twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
+        two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
+        
+        if len(twii_close_d) >= 20 and len(two_close_d) >= 20:
+            twii_ma20 = twii_close_d.rolling(20).mean().iloc[-1]
+            two_ma20 = two_close_d.rolling(20).mean().iloc[-1]
+            twii_now_d = twii_close_d.iloc[-1]
+            two_now_d = two_close_d.iloc[-1]
+            
+            twii_bull = twii_now_d >= twii_ma20
+            two_bull = two_now_d >= two_ma20
+            
+            if not twii_bull and not two_bull:
+                return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破日K月線(20MA)！啟動鐵血空倉令，防範波段大跌！</b>"
+            elif not twii_bull or not two_bull:
+                weak_target = "大盤" if not twii_bull else "櫃買"
+                return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K月線(20MA)結構！請嚴格控制部位！</b>"
+            else:
+                return "OK", "🟢 <b>【多頭日線安全】大盤與櫃買穩守在日線20MA之上，備援雷達正常運作。</b>"
+    except Exception as e:
+        print(f"⚠️ 備援日線下載也失敗 ({e})")
+        
+    return "OK", "⚠️ <b>【風控連線異常】無法取得指數即時資料，自動切換至常規掃描模式。</b>"
 
 # ==========================================
 # 1. 雙保險：股票名單下載
@@ -94,15 +118,26 @@ def get_all_taiwan_stocks_official():
     return stock_dict
 
 # ==========================================
-# 2. 鐵血 666 原生數學計算大腦
+# 2. 鐵血 666 原生數學計算大腦 (新增第4招：日線均線多頭排列)
 # ==========================================
 def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols) or "Volume" not in df_d.columns: return None
-    if len(df_60m) < 65 or len(df_d) < 5: return None
+    if len(df_60m) < 65 or len(df_d) < 25: return None # 提高日線筆數要求，以便計算 20MA
     
+    # 5日均量風控（流動性檢查）
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
     if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 500000: return None
+    
+    # 🎯 【第 4 招核心濾網】檢查日K線是否滿足 5MA > 10MA > 20MA 多頭排列
+    d_close = df_d["Close"].squeeze().astype(float)
+    ma5_d = d_close.rolling(5).mean().iloc[-1]
+    ma10_d = d_close.rolling(10).mean().iloc[-1]
+    ma20_d = d_close.rolling(20).mean().iloc[-1]
+    
+    if pd.isna(ma5_d) or pd.isna(ma10_d) or pd.isna(ma20_d): return None
+    if not (ma5_d > ma10_d > ma20_d): 
+        return None # 只要日線趨勢沒有多頭排列，直接淘汰！
         
     c_ser = df_60m["Close"].squeeze().astype(float)
     h_ser = df_60m["High"].squeeze().astype(float)
@@ -161,13 +196,12 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
 # 3. 主程式流
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 戰法·核心記憶記分板雷達】...")
+    print("🚀 啟動【台股 666 戰法·日線多頭均線全排列雷達】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
     current_hour, current_minute = now_dt.hour, now_dt.minute
     
-    # 💾 讀取大腦記憶資料庫 (CSV 格式)
     memory_file = "stock_memory.csv"
     if os.path.exists(memory_file):
         try:
@@ -177,7 +211,6 @@ if __name__ == "__main__":
     else:
         df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
         
-    # 收盤大掃除：如果是 13:30 之後，直接重置計分板，準備迎接入明天
     if current_hour >= 13 and current_minute >= 25:
         df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
         print("🧹 已到收盤時間，清空計分板，明日重新累計。")
@@ -198,7 +231,8 @@ if __name__ == "__main__":
         chunk = all_yf_codes[i:i + chunk_size]
         try:
             data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=False)
-            data_d = yf.download(chunk, period="12d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
+            # 調整日線下載長度至 40d，確保足夠計算 20MA 均線
+            data_d = yf.download(chunk, period="40d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
         except:
             continue
             
@@ -235,13 +269,10 @@ if __name__ == "__main__":
         df_report = pd.DataFrame(results)
         df_report = df_report.sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
         
-        # 🎯 記憶體大腦核心運算：更新計分板
         this_run_sids = set(df_report["代碼"].astype(str))
         last_run_sids = set(df_mem[df_mem["last_run"] == 1]["stock_id"].astype(str))
         
-        # 先把上一輪標記歸零
         df_mem["last_run"] = 0
-        
         for sid in this_run_sids:
             if sid in df_mem["stock_id"].values:
                 df_mem.loc[df_mem["stock_id"] == sid, "total_count"] += 1
@@ -250,7 +281,6 @@ if __name__ == "__main__":
                 new_row = pd.DataFrame([{"stock_id": sid, "last_run": 1, "total_count": 1}])
                 df_mem = pd.concat([df_mem, new_row], ignore_index=True)
         
-        # 找出今天重複出現次數最多的前 3 名最高次數（且次數必須 >= 2）
         valid_counts = df_mem[df_mem["total_count"] >= 2]["total_count"].values
         top_threshold = np.sort(valid_counts)[-3] if len(valid_counts) >= 3 else (np.min(valid_counts) if len(valid_counts) > 0 else 999)
         
@@ -259,16 +289,12 @@ if __name__ == "__main__":
         
         for idx, row in df_report.iterrows():
             sid_str = str(row['代碼'])
-            
-            # 判斷標籤邏輯
             tag = ""
             mem_row = df_mem[df_mem["stock_id"] == sid_str]
             total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
             
-            # 1. 判斷是否為重複霸榜焦點股
             if total_seen >= 2 and total_seen >= top_threshold:
                 tag = f" 🔥【連霸 {total_seen} 輪】"
-            # 2. 如果不是霸榜，判斷是否為全新進榜（上一輪沒有且歷史有長過名單）
             elif sid_str not in last_run_sids and len(last_run_sids) > 0:
                 tag = " 🆕【全新進榜】"
                 
@@ -306,7 +332,6 @@ if __name__ == "__main__":
         if standard_list:
             send_tg_msg(f"📦 <b>【標準 666 續報尾包】</b>\n------------------------\n" + "\n".join(standard_list))
             
-        # 💾 將最新累計記分板存檔
         df_mem.to_csv(memory_file, index=False)
             
     else:
