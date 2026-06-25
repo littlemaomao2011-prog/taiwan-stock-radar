@@ -1,69 +1,53 @@
-name: Taiwan Stock 666 Scanner
+name: Taiwan Stock Auto Scanner
 
 on:
+  workflow_dispatch: # 支援手動按鈕觸發
   schedule:
-    # 💡 完美對齊台股盤中時間（轉換為 UTC 時間）
-    - cron: '5 1 * * 1-5'   # 09:05
-    - cron: '30 1 * * 1-5'  # 09:30
-    - cron: '50 1 * * 1-5'  # 09:50
-    - cron: '15 2 * * 1-5'  # 10:15
-    - cron: '35 2 * * 1-5'  # 10:35
-    - cron: '0 3 * * 1-5'   # 11:00
-    - cron: '30 3 * * 1-5'  # 11:30
-    - cron: '0 4 * * 1-5'   # 12:00
-    - cron: '30 4 * * 1-5'  # 12:30
-    - cron: '0 5 * * 1-5'   # 13:00
-    - cron: '20 5 * * 1-5'  # 13:20
-  workflow_dispatch:        # 保留手動點擊執行的按鈕
+    # 💡 5分鐘執行一次，對齊台灣時間週一至週五 09:00 ~ 13:40
+    # 換算成 UTC 時間為 01:00 ~ 05:40 
+    - cron: '*/5 1-5 * * 1-5'
 
 jobs:
-  scan:
+  run-scanner:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write       # 允許雲端寫入權限
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    - name: Checkout Repository
+      uses: actions/checkout@v3
       with:
-        persist-credentials: true # 保持認證狀態
+        persist-credentials: true
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
-        cache: 'pip'
+        python-version: "3.10"
 
-    - name: Install dependencies
+    - name: Cache Pip Packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance pandas numpy requests lxml openpyxl
+        pip install yfinance pandas numpy requests lxml jinja2 pytz
 
-    - name: Run scanner
-      env:
-        PYTHONUNBUFFERED: "1"
-      run: python scanner_rising_point.py
-
-    - name: Commit and Push memory changes
+    - name: Execute Stock Radar Scanner
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # 防呆機制：若記憶檔案不存在，自動建立一個空的
-        if [ ! -f stock_memory.csv ]; then
-          echo "stock_id,last_run,total_count" > stock_memory.csv
+        python scanner_rising_point.py
+
+    - name: Git Auto Commit and Push Memory
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        # 檢查 csv 有沒有被換天清空或寫入新連霸數據
+        if [ -f stock_memory.csv ]; then
+          git add stock_memory.csv
+          git commit -m "Auto update stock memory database [skip ci]" --allow-empty
+          git push origin main || echo "No changes to push or conflict"
         fi
-        
-        git add stock_memory.csv
-        
-        # 檢查是否有真正的檔案變動
-        if ! git diff --quiet --staged; then
-          git commit -m "💾 自動更新盤中記憶數據 [skip ci]"
-          
-          # ⚡【修復核心關鍵】在 push 之前先拉取並衍合主人最新修改的程式碼，徹底解決衝突問題
-          git pull --rebase origin main
-          
-          git push origin main
-        else
-          echo "ℹ️ 數據無變動，跳過推送。"
-        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
