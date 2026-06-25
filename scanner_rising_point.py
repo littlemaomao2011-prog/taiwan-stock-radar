@@ -39,7 +39,6 @@ def check_market_filter():
     print("🌍 正在下載大盤與櫃買指數進行安全過濾...")
     try:
         market_data = yf.download(["^TWII", "^TWO"], period="30d", interval="60m", progress=False, auto_adjust=False)
-        
         twii_close = market_data["Close"]["^TWII"].dropna().astype(float)
         two_close = market_data["Close"]["^TWO"].dropna().astype(float)
         
@@ -48,15 +47,11 @@ def check_market_filter():
             
         twii_ma60 = twii_close.rolling(60).mean().iloc[-1]
         two_ma60 = two_close.rolling(60).mean().iloc[-1]
-        
         twii_now = twii_close.iloc[-1]
         two_now = two_close.iloc[-1]
         
         twii_bull = twii_now >= twii_ma60
         two_bull = two_now >= two_ma60
-        
-        print(f"📊 加權現價: {round(twii_now,1)} (60MA: {round(twii_ma60,1)}) -> {'多頭' if twii_bull else '空頭'}")
-        print(f"📊 櫃買現價: {round(two_now,1)} (60MA: {round(two_ma60,1)}) -> {'多頭' if two_bull else '空頭'}")
         
         if not twii_bull and not two_bull:
             return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破小時60MA！啟動鐵血空倉令，今日不撈魚！抱緊現金！</b>"
@@ -66,29 +61,23 @@ def check_market_filter():
         else:
             return "OK", "🟢 <b>【多頭安全環境】大盤與櫃買皆穩守在小時60MA之上，雷達全力開火！</b>"
     except Exception as e:
-        print(f"⚠️ 指數下載失敗 ({e})，安全起見預設不鎖倉。")
         return "OK", "⚠️ 指數網路連線異常，自動切換至普通掃描模式。"
 
 # ==========================================
-# 1. 雙保險：網頁下載與超強大備援名單
+# 1. 雙保險：股票名單下載
 # ==========================================
 def get_all_taiwan_stocks_official():
-    print("📋 正在從台灣證券編碼官方網頁下載股票清單...")
     stock_dict = {}
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
     urls = [
         ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "TW"),
         ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", "TWO")
     ]
-    
     try:
         for url, m_type in urls:
             res = requests.get(url, headers=headers, timeout=8)
             res.encoding = 'big5'
-            dfs = pd.read_html(res.text)
-            df = dfs[0]
+            df = pd.read_html(res.text)[0]
             for index, row in df.iterrows():
                 cell_text = str(row.iloc[0]).strip()
                 match = re.match(r'^(\d{4})\s+(.+)$', cell_text)
@@ -98,21 +87,18 @@ def get_all_taiwan_stocks_official():
                     if "特" in sname or "甲" in sname or "乙" in sname: continue
                     stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
     except Exception as e:
-        print(f"⚠️ 官方網頁連線受阻 ({e})，啟動備援機制")
-        
+        print(f"⚠️ 官方網頁連線受阻，啟動備援名單")
     if len(stock_dict) == 0:
-        backup_list = [("6141","柏承","TWO"), ("6901","鑽石投資","TW"), ("8071","能率網通","TWO"), ("8932","智通","TWO")]
-        for sid, sname, m_type in backup_list:
+        for sid, sname, m_type in [("6141","柏承","TWO"), ("6901","鑽石投資","TW"), ("8071","能率網通","TWO")]:
             stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
     return stock_dict
 
 # ==========================================
 # 2. 鐵血 666 原生數學計算大腦
 # ==========================================
-def calculate_true_666_strategy(df_60m, df_d, ticker):
+def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
-    if not all(col in df_60m.columns for col in required_cols): return None
-    if not "Volume" in df_d.columns: return None
+    if not all(col in df_60m.columns for col in required_cols) or "Volume" not in df_d.columns: return None
     if len(df_60m) < 65 or len(df_d) < 5: return None
     
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
@@ -133,36 +119,33 @@ def calculate_true_666_strategy(df_60m, df_d, ticker):
     
     k_series = rsv.ewm(com=2, adjust=False).mean() 
     d_series = k_series.ewm(com=2, adjust=False).mean()
-    kv = float(k_series.iloc[-1])
-    dv = float(d_series.iloc[-1])
+    kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     if kv < 60.0: return None
     
     ema12 = c_ser.ewm(span=12, adjust=False).mean()
     ema26 = c_ser.ewm(span=26, adjust=False).mean()
-    dif = ema12 - ema26
-    dea = dif.ewm(span=9, adjust=False).mean()
-    macd_diff = float((dif - dea).iloc[-1])
+    macd_diff = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
     
     chg = c_ser.diff()
     su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
     sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
     sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
-    denom = 1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf)
-    vr26 = ((su + 0.5 * sf) / denom) * 100
+    vr26 = ((su + 0.5 * sf) / (1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf))) * 100
     
     ma20 = c_ser.rolling(20).mean()
     std20 = c_ser.rolling(20).std()
-    bb_upper = float((ma20 + 2 * std20).iloc[-1])
-    bb_middle = float(ma20.iloc[-1])
+    bb_upper, bb_middle = float((ma20 + 2 * std20).iloc[-1]), float(ma20.iloc[-1])
     
-    c_p = float(c_ser.iloc[-1])
-    o_p = float(o_ser.iloc[-1])
-    v_p = float(v_ser.iloc[-1])
+    c_p, o_p, v_p = float(c_ser.iloc[-1]), float(o_ser.iloc[-1]), float(v_ser.iloc[-1])
     v_mean_20h = v_ser.tail(21).head(20).mean()
     
     if c_p < bb_middle or c_p < ma60: return None
-    if v_mean_20h > 0 and v_p < v_mean_20h: return None
     if (c_p - o_p) / o_p * 100 < -0.8: return None
+    
+    if current_hour == 9:
+        if v_mean_20h > 0 and v_p < (v_mean_20h * 1.2): return None
+    else:
+        if v_mean_20h > 0 and v_p < (v_mean_20h * 0.7): return None
 
     if kv > dv and macd_diff > 0 and vr26 >= 100.0:
         vol_mult = round(v_p / v_mean_20h, 1) if v_mean_20h > 0 else 1.0
@@ -178,24 +161,37 @@ def calculate_true_666_strategy(df_60m, df_d, ticker):
 # 3. 主程式流
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 戰法·純原生升級版大盤雙濾網雷達】...")
-    
+    print("🚀 啟動【台股 666 戰法·核心記憶記分板雷達】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
-    now = datetime.datetime.now(tz_taiwan).strftime("%Y-%m-%d %H:%M")
+    now_dt = datetime.datetime.now(tz_taiwan)
+    now = now_dt.strftime("%Y-%m-%d %H:%M")
+    current_hour, current_minute = now_dt.hour, now_dt.minute
     
+    # 💾 讀取大腦記憶資料庫 (CSV 格式)
+    memory_file = "stock_memory.csv"
+    if os.path.exists(memory_file):
+        try:
+            df_mem = pd.read_csv(memory_file, dtype={"stock_id": str})
+        except:
+            df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
+    else:
+        df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
+        
+    # 收盤大掃除：如果是 13:30 之後，直接重置計分板，準備迎接入明天
+    if current_hour >= 13 and current_minute >= 25:
+        df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
+        print("🧹 已到收盤時間，清空計分板，明日重新累計。")
+
     filter_status, filter_msg = check_market_filter()
     results = []
     
     if filter_status == "LOCK":
-        out_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n------------------------\n"
-        out_msg += f"{filter_msg}\n\n➔ 雷達判定風控鎖倉中，今日不撈魚！"
-        send_tg_msg(out_msg)
+        send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉，今日不撈魚！")
         exit(0)
         
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
-    print(f"📊 最終載入 {total_count} 檔台灣上市櫃股票進行追蹤。")
     
     chunk_size = 40  
     for i in range(0, total_count, chunk_size):
@@ -204,7 +200,6 @@ if __name__ == "__main__":
             data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=False)
             data_d = yf.download(chunk, period="12d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
         except:
-            time.sleep(1)
             continue
             
         for ticker in chunk:
@@ -217,7 +212,7 @@ if __name__ == "__main__":
                 df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
                 df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
                 
-                res_strat = calculate_true_666_strategy(df_stock_60m, df_stock_d, ticker)
+                res_strat = calculate_true_666_strategy(df_stock_60m, df_stock_d, ticker, current_hour)
                 if res_strat:
                     sid = stock_map[ticker]["sid"]
                     sname = stock_map[ticker]["sname"]
@@ -232,54 +227,87 @@ if __name__ == "__main__":
                     })
             except:
                 continue
-        print(f"⏳ 雷達進度: {min(i + chunk_size, total_count)} / {total_count} 檔...")
-        time.sleep(0.1)
+        time.sleep(0.05)
         
     print(f"\n🔊 掃描完畢，共篩選出 {len(results)} 檔符合條件標的。")
     
-    # 🌟 核心修改：改為【前五強】機制
     if results:
         df_report = pd.DataFrame(results)
         df_report = df_report.sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
         
-        # 建立第一封信：標頭 + 前五強
+        # 🎯 記憶體大腦核心運算：更新計分板
+        this_run_sids = set(df_report["代碼"].astype(str))
+        last_run_sids = set(df_mem[df_mem["last_run"] == 1]["stock_id"].astype(str))
+        
+        # 先把上一輪標記歸零
+        df_mem["last_run"] = 0
+        
+        for sid in this_run_sids:
+            if sid in df_mem["stock_id"].values:
+                df_mem.loc[df_mem["stock_id"] == sid, "total_count"] += 1
+                df_mem.loc[df_mem["stock_id"] == sid, "last_run"] = 1
+            else:
+                new_row = pd.DataFrame([{"stock_id": sid, "last_run": 1, "total_count": 1}])
+                df_mem = pd.concat([df_mem, new_row], ignore_index=True)
+        
+        # 找出今天重複出現次數最多的前 3 名最高次數（且次數必須 >= 2）
+        valid_counts = df_mem[df_mem["total_count"] >= 2]["total_count"].values
+        top_threshold = np.sort(valid_counts)[-3] if len(valid_counts) >= 3 else (np.min(valid_counts) if len(valid_counts) > 0 else 999)
+        
         header_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
         top_list = []
         
         for idx, row in df_report.iterrows():
-            if idx < 5: # 🎯 這裡由原先的 3 改成 5，成功解鎖菁英前五強！
+            sid_str = str(row['代碼'])
+            
+            # 判斷標籤邏輯
+            tag = ""
+            mem_row = df_mem[df_mem["stock_id"] == sid_str]
+            total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
+            
+            # 1. 判斷是否為重複霸榜焦點股
+            if total_seen >= 2 and total_seen >= top_threshold:
+                tag = f" 🔥【連霸 {total_seen} 輪】"
+            # 2. 如果不是霸榜，判斷是否為全新進榜（上一輪沒有且歷史有長過名單）
+            elif sid_str not in last_run_sids and len(last_run_sids) > 0:
+                tag = " 🆕【全新進榜】"
+                
+            if idx < 5:
                 top_list.append(
-                    f"🔥 <b>【菁英前五強】★ {row['代碼']} {row['名稱']} ★</b>\n"
-                    f" 📈 價: {row['現價']} (60MA:{row['60MA位置']} | 軌:{row['布林上軌']})\n"
-                    f" ⚡ 量比: <b>{row['小時量比']}</b> | VR: <b>{row['VR值']}</b>\n"
-                    f" 📊 KD: K{row['60分K值']}>D{row['60分D值']} | MACD柱: {row['MACD柱']}\n"
+                    f"🔥 <b>【菁英特攻·前五強】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
+                    f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
+                    f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
+                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
                 )
         
-        # 發送第一封：前五強豪華戰報
-        first_send = header_msg + "\n".join(top_list)
-        send_tg_msg(first_send)
+        send_tg_msg(header_msg + "\n".join(top_list))
         
-        # 建立後續封信：標準型股票（第 6 檔開始，每 15 檔打包，防爆字數）
         standard_list = []
         for idx, row in df_report.iterrows():
-            if idx >= 5: # 🎯 從第 6 檔開始放入標準包
-                standard_list.append(
-                    f"🚨 <b>【標準】{row['代碼']} {row['名稱']}</b>\n"
-                    f"➔ 價:{row['現價']} | 量比:{row['小時量比']} | VR:{row['VR值']} | KD:{row['60分K值']}>{row['60分D值']}"
-                )
+            if idx >= 5:
+                sid_str = str(row['代碼'])
+                tag = ""
+                mem_row = df_mem[df_mem["stock_id"] == sid_str]
+                total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
                 
+                if total_seen >= 2 and total_seen >= top_threshold:
+                    tag = f" 🔥[連霸{total_seen}輪]"
+                elif sid_str not in last_run_sids and len(last_run_sids) > 0:
+                    tag = " 🆕[新進榜]"
+                    
+                standard_list.append(
+                    f"🚨 <b>【標準 666】{row['代碼']} {row['名稱']}</b>{tag}\n"
+                    f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | VR: {row['VR值']} | KD: {row['60分K值']}>{row['60分D值']}"
+                )
                 if len(standard_list) == 15:
-                    batch_msg = f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list)
-                    send_tg_msg(batch_msg)
+                    send_tg_msg(f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list))
                     standard_list = []
                     time.sleep(0.5)
-                    
         if standard_list:
-            batch_msg = f"📦 <b><b>【標準 666 續報尾包】</b></b>\n------------------------\n" + "\n".join(standard_list)
-            send_tg_msg(batch_msg)
+            send_tg_msg(f"📦 <b>【標準 666 續報尾包】</b>\n------------------------\n" + "\n".join(standard_list))
+            
+        # 💾 將最新累計記分板存檔
+        df_mem.to_csv(memory_file, index=False)
             
     else:
-        out_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合條件標的。"
-        send_tg_msg(out_msg)
-        
-    print("➔ 升級菁英前五強版全市場掃描完畢！")
+        send_tg_msg(f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n------------------------\n❌ 目前市場無符合條件標的。")
