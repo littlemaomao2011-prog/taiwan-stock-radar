@@ -34,10 +34,13 @@ def send_tg_msg(msg):
         print(f"❌ Telegram 網路連線失敗: {e}")
 
 # ==========================================
-# 0. 大盤與櫃買雙重指數風控
+# 0. 大盤風控與【魔改：開盤日智慧自動偵測】
 # ==========================================
-def check_market_filter():
-    print("🌍 正在下載大盤與櫃買指數進行安全過濾...")
+def check_market_filter_and_holiday():
+    print("🌍 正在下載大盤數據並驗證今日是否開盤...")
+    tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
+    today_str = datetime.datetime.now(tz_taiwan).strftime("%Y-%m-%d")
+    
     try:
         market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
         if not market_data_d.empty:
@@ -48,6 +51,12 @@ def check_market_filter():
                 twii_close_d = market_data_d["Close"].dropna().astype(float)
                 two_close_d = market_data_d["Close"].dropna().astype(float)
             
+            # 💡 【魔改：休市自動偵測】檢查最新一根日K的日期是不是今天
+            latest_market_date = twii_close_d.index[-1].strftime("%Y-%m-%d")
+            if latest_market_date != today_str:
+                print(f"💤 偵測到今日 ({today_str}) 台股休市不開盤 (大盤最新K線為 {latest_market_date})。自動休眠以節省 GitHub 額度。")
+                return "HOLIDAY", f"ℹ️ 今日台股休市不開盤。"
+
             if len(twii_close_d) >= 20 and len(two_close_d) >= 20:
                 twii_ma20 = twii_close_d.rolling(20).mean().iloc[-1]
                 two_ma20 = two_close_d.rolling(20).mean().iloc[-1]
@@ -99,7 +108,7 @@ def get_all_taiwan_stocks_official():
     return stock_dict
 
 # ==========================================
-# 2. 魔改核心：鐵血 666 + 道氏形態 + 乖離防追高大腦
+# 2. 終極核心：666 + 道氏形態 + 雙重防禦 + 量能換手大腦
 # ==========================================
 def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
@@ -114,31 +123,46 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     d_high = df_d["High"].squeeze().astype(float)
     d_low = df_d["Low"].squeeze().astype(float)
     d_open = df_d["Open"].squeeze().astype(float)
+    d_vol = df_d["Volume"].squeeze().astype(float)
     
     current_now_price = d_close.iloc[-1]
     
-    # 🛑 【魔改功能 A：當日漲幅與5MA乖離率防追高風控】
+    # 当日涨幅与 5MA 乖離率防追高
     today_open = d_open.iloc[-1]
     today_pct = ((current_now_price - today_open) / today_open) * 100
-    if today_pct > 8.5: return None  # ❌ 當天開盤到現在已經噴超過 8.5% 接近漲停，放棄追高！
+    if today_pct > 8.5: return None  
     
     ma5_d = d_close.tail(5).mean()
     bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100
-    if bias_5ma > 8.0: return None  # ❌ 股價遠離 5日均線 乖離率 > 8%，過熱不追！
+    if bias_5ma > 8.0: return None  
     
-    # 🏛️ 【道氏理論日K形態分析】
+    # 🏛️ 道氏理論日K形態分析
     recent_lows = d_low.tail(20)
     recent_highs = d_high.tail(20)
     
     prior_low = recent_lows.head(15).min()   
     current_low = recent_lows.tail(5).min()   
-    prior_high = recent_highs.head(15).max()  
     
-    if current_low < prior_low: return None            # ❌ 破底股淘汰
-    if current_now_price < (prior_high * 0.96): return None  # ❌ 離前高太遠無攻擊意願淘汰
+    # 找出前 15 天的波段最高點，以及那一天發生的索引位置
+    prior_high_zone = recent_highs.head(15)
+    prior_high = prior_high_zone.max()  
+    prior_high_idx = prior_high_zone.idxmax()
     
-    # 🎯 【魔改功能 B：自動試算道氏前波低點防守價】
-    # 實戰上以近 20 天的波段最低點（即 prior_low 或近期轉折低點）作為嚴格防守停損點
+    if current_low < prior_low: return None            
+    if current_now_price < (prior_high * 0.96): return None  
+    
+    # 🕵️‍♂️ 【魔改：M頭量能濾網（防假突破）】
+    # 如果今天現價已經真正穿越了前波高點（代表真突破），則今日估計/實際量能必須大於前高那一天的日K總量
+    if current_now_price >= prior_high:
+        prior_high_vol = d_vol.loc[prior_high_idx]
+        today_vol_now = d_vol.iloc[-1]
+        
+        # 盤中預估量放大器：如果是九點檔，將目前量乘以 3.5 估算全天量；其餘時段乘以 1.5
+        estimated_today_vol = today_vol_now * (3.5 if current_hour == 9 else 1.5)
+        if estimated_today_vol < prior_high_vol:
+            return None  # ❌ 價過高但量能進攻誠意不足，判定為假突破/M頭誘多陷阱，淘汰！
+
+    # 🎯 自動試算道氏前波低點防守價
     stop_loss_price = round(min(prior_low, current_low), 2)
     risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
     
@@ -188,7 +212,7 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
 
     if kv > dv and macd_diff > 0 and vr26 >= 100.0:
         vol_mult = round(v_p / v_mean_20h, 1) if v_mean_20h > 0 else 1.0
-        dow_status = "↗️ 道氏多頭突破" if current_now_price >= prior_high else "🔄 道氏底底高蓄勢"
+        dow_status = "↗️ 道氏真量突破" if current_now_price >= prior_high else "🔄 道氏底底高蓄勢"
         return {
             "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
             "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍",
@@ -199,7 +223,7 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     return None
 
 # ==========================================
-# 3. ⚡ 魔改功能 C：多執行緒平行高速下載核心
+# 3. 多執行緒平行高速下載核心
 # ==========================================
 def download_and_scan_chunk(chunk, stock_map, current_hour):
     local_results = []
@@ -238,12 +262,23 @@ def download_and_scan_chunk(chunk, stock_map, current_hour):
     return local_results
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 × 道氏波段 · 終極重裝平行加速雷達】...")
+    print("🚀 啟動【台股 666 × 道氏波段 · 終極封頂完全體雷達】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
     current_hour, current_minute = now_dt.hour, now_dt.minute
     
+    # 1. 智慧開盤日過濾與大盤風控
+    filter_status, filter_msg = check_market_filter_and_holiday()
+    
+    if filter_status == "HOLIDAY":
+        # 💡 休市日直接了斷退出，不發 TG、不推 Git、不耗費 GitHub Action 額度
+        exit(0)
+        
+    if filter_status == "LOCK":
+        send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
+        exit(0)
+        
     memory_file = "stock_memory.csv"
     if os.path.exists(memory_file):
         try: df_mem = pd.read_csv(memory_file, dtype={"stock_id": str})
@@ -255,21 +290,14 @@ if __name__ == "__main__":
         df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
         print("🧹 已到收盤時間，清空計分板。")
 
-    filter_status, filter_msg = check_market_filter()
-    results = []
-    
-    if filter_status == "LOCK":
-        send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
-        exit(0)
-        
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
     
-    # ⚡ 升級多線程分組
     chunk_size = 40  
     chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, total_count, chunk_size)]
     
+    results = []
     print(f"⚡ 啟動平行運算，共切分 {len(chunks)} 個任務同步發射...")
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(download_and_scan_chunk, chunk, stock_map, current_hour): chunk for chunk in chunks}
@@ -299,7 +327,7 @@ if __name__ == "__main__":
         valid_counts = df_mem[df_mem["total_count"] >= 2]["total_count"].values
         top_threshold = np.sort(valid_counts)[-3] if len(valid_counts) >= 3 else (np.min(valid_counts) if len(valid_counts) > 0 else 999)
         
-        header_msg = f"🔔 <b>【台股 666 ⚔️ 終極重裝戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
+        header_msg = f"🔔 <b>【台股 666 ⚖️ 終極封頂戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
         top_list = []
         
         for idx, row in df_report.iterrows():
@@ -341,7 +369,8 @@ if __name__ == "__main__":
                     f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | 防守: {row['防守價']} ({row['預估風險']})"
                 )
                 if len(standard_list) == 15:
-                    send_tg_msg(f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list))
+                    send_tw_msg = f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list)
+                    send_tg_msg(send_tw_msg)
                     standard_list = []
                     time.sleep(0.5)
         if standard_list:
@@ -349,4 +378,4 @@ if __name__ == "__main__":
             
         df_mem.to_csv(memory_file, index=False)
     else:
-        send_tg_msg(f"🔔 <b>【台股 666 ⚔️ 終極重裝戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、未過熱且爆量起漲」之標的。")
+        send_tg_msg(f"🔔 <b>【台股 666 ⚖️ 終極封頂戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、真突破且爆量」之標的。")
