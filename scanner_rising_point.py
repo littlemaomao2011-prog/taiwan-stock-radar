@@ -118,26 +118,16 @@ def get_all_taiwan_stocks_official():
     return stock_dict
 
 # ==========================================
-# 2. 鐵血 666 原生數學計算大腦 (新增第4招：日線均線多頭排列)
+# 2. 鐵血 666 原生數學計算大腦
 # ==========================================
 def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols) or "Volume" not in df_d.columns: return None
-    if len(df_60m) < 65 or len(df_d) < 25: return None # 提高日線筆數要求，以便計算 20MA
+    if len(df_60m) < 65 or len(df_d) < 5: return None
     
     # 5日均量風控（流動性檢查）
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
     if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 500000: return None
-    
-    # 🎯 【第 4 招核心濾網】檢查日K線是否滿足 5MA > 10MA > 20MA 多頭排列
-    d_close = df_d["Close"].squeeze().astype(float)
-    ma5_d = d_close.rolling(5).mean().iloc[-1]
-    ma10_d = d_close.rolling(10).mean().iloc[-1]
-    ma20_d = d_close.rolling(20).mean().iloc[-1]
-    
-    if pd.isna(ma5_d) or pd.isna(ma10_d) or pd.isna(ma20_d): return None
-    if not (ma5_d > ma10_d > ma20_d): 
-        return None # 只要日線趨勢沒有多頭排列，直接淘汰！
         
     c_ser = df_60m["Close"].squeeze().astype(float)
     h_ser = df_60m["High"].squeeze().astype(float)
@@ -177,10 +167,11 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
     if c_p < bb_middle or c_p < ma60: return None
     if (c_p - o_p) / o_p * 100 < -0.8: return None
     
+    # 💥 【量比高門檻維持】
     if current_hour == 9:
-        if v_mean_20h > 0 and v_p < (v_mean_20h * 1.2): return None
+        if v_mean_20h > 0 and v_p < (v_mean_20h * 1.3): return None
     else:
-        if v_mean_20h > 0 and v_p < (v_mean_20h * 0.7): return None
+        if v_mean_20h > 0 and v_p < (v_mean_20h * 0.8): return None
 
     if kv > dv and macd_diff > 0 and vr26 >= 100.0:
         vol_mult = round(v_p / v_mean_20h, 1) if v_mean_20h > 0 else 1.0
@@ -196,7 +187,7 @@ def calculate_true_666_strategy(df_60m, df_d, ticker, current_hour):
 # 3. 主程式流
 # ==========================================
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 戰法·日線多頭均線全排列雷達】...")
+    print("🚀 啟動【台股 666 戰法·爆量黑馬全面偵測雷達】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -231,8 +222,7 @@ if __name__ == "__main__":
         chunk = all_yf_codes[i:i + chunk_size]
         try:
             data_60m = yf.download(chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=False)
-            # 調整日線下載長度至 40d，確保足夠計算 20MA 均線
-            data_d = yf.download(chunk, period="40d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
+            data_d = yf.download(chunk, period="12d", interval="1d", group_by="ticker", progress=False, auto_adjust=False)
         except:
             continue
             
@@ -287,27 +277,32 @@ if __name__ == "__main__":
         header_msg = f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
         top_list = []
         
+        # 🟢 【解鎖全數發送】前 5 強維持完整版詳細秀出
         for idx, row in df_report.iterrows():
-            sid_str = str(row['代碼'])
-            tag = ""
-            mem_row = df_mem[df_mem["stock_id"] == sid_str]
-            total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
-            
-            if total_seen >= 2 and total_seen >= top_threshold:
-                tag = f" 🔥【連霸 {total_seen} 輪】"
-            elif sid_str not in last_run_sids and len(last_run_sids) > 0:
-                tag = " 🆕【全新進榜】"
-                
             if idx < 5:
+                sid_str = str(row['代碼'])
+                tag = ""
+                mem_row = df_mem[df_mem["stock_id"] == sid_str]
+                total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
+                
+                if total_seen >= 2 and total_seen >= top_threshold:
+                    tag = f" 🔥【連霸 {total_seen} 輪】"
+                elif sid_str not in last_run_sids and len(last_run_sids) > 0:
+                    tag = " 🆕【全新進榜】"
+                elif len(last_run_sids) == 0:
+                    tag = " 🚀【雷達初次偵測】"
+                    
                 top_list.append(
-                    f"🔥 <b>【菁英特攻·前五強】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
+                    f"🔥 <b>【核心特攻·前五強】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
                     f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
                     f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
                     f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
                 )
         
-        send_tg_msg(header_msg + "\n".join(top_list))
+        if top_list:
+            send_tg_msg(header_msg + "\n".join(top_list))
         
+        # 📦 【解鎖續報】第 6 名以後的所有符合個股，一樣用標準包打包發送，絕不漏氣！
         standard_list = []
         for idx, row in df_report.iterrows():
             if idx >= 5:
@@ -335,4 +330,4 @@ if __name__ == "__main__":
         df_mem.to_csv(memory_file, index=False)
             
     else:
-        send_tg_msg(f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n------------------------\n❌ 目前市場無符合條件標的。")
+        send_tg_msg(f"🔔 <b>【台股 666 鐵血精選回報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合條件標的。")
