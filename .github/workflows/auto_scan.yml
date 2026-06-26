@@ -1,71 +1,41 @@
-name: Taiwan Stock Radar Auto Run
+name: Taiwan Stock Radar
 
 on:
-  # 1. 每天一到五，台股盤中與盤後定時自動執行 (UTC 時間 01:10 = 台北時間 09:10，以此類推)
   schedule:
-    - cron: '10 1 * * 1-5'   # 台北時間 09:10 (開盤衝刺)
-    - cron: '10 2 * * 1-5'   # 台北時間 10:10 (盤中追蹤)
-    - cron: '10 3 * * 1-5'   # 台北時間 11:10 (盤中追蹤)
-    - cron: '10 4 * * 1-5'   # 台北時間 12:10 (盤中追蹤)
-    - cron: '10 5 * * 1-5'   # 台北時間 13:10 (尾盤確認)
-    - cron: '15 6 * * 1-5'   # 台北時間 14:15 (盤后結算)
-  # 2. 允許手動點擊執行測試
-  workflow_dispatch:
+    - cron: '35 1,6 * * 1-5' # 舉例：盤中與盤後定時執行
+  workflow_dispatch: # 允許手動觸發
 
 jobs:
-  run-scanner:
+  run-radar:
     runs-on: ubuntu-latest
+    
+    # ✨ 關鍵就是補上這兩行，允許這個工作流有權限 Push 程式碼與檔案回儲存庫
+    permissions:
+      contents: write
 
     steps:
-    # 步驟 1：檢出專案程式碼
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    # 步驟 2：設定 Python 3.10 運行環境
-    - name: Set up Python 3.10
+    - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10'
-        cache: 'pip' # 開啟 pip 快取機制加速後續下載
+        python-python: '3.10'
+        cache: 'pip'
 
-    # 步驟 3：下載、編譯並安裝 TA-Lib 的底層 C 語言編譯庫（核心關鍵！）
-    - name: Install TA-Lib C Library
-      run: |
-        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-        tar -xzf ta-lib-0.4.0-src.tar.gz
-        cd ta-lib/
-        ./configure --prefix=/usr
-        make
-        sudo make install
-        cd ..
-        rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
-
-    # 步驟 4：安裝 Python 必要的金融與數據分析套件
-    - name: Install Python Dependencies
+    - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy yfinance requests lxml beautifulsoup4 html5lib
-        pip install TA-Lib
+        pip install -r requirements.txt
 
-    # 步驟 5：執行你的台股 666 精選雷達主程式
-    - name: Run Stock Scanner
-      run: |
-        python scanner_rising_point.py
+    - name: Run Scanner
+      run: python scanner_rising_point.py
 
-    # 步驟 6：自動把更新後的快取與連霸記憶庫資料推回 GitHub 存檔
-    - name: Commit and Push Cache Changes
+    # 你的 Git Commit & Push 步驟
+    - name: Commit and Push changes
       run: |
         git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        # 檢查檔案是否有變動，有的話才進行 commit，避免沒變動時報錯
+        git config --local user.name "github-actions[bot]"
         git add scan_cache.csv stock_memory.csv || true
-        
-        if ! git diff --cached --quiet; then
-          git commit -m "🔄 自動更新快取與連霸記憶庫 [$(date '+%Y-%m-%d %H:%M:%S')]"
-          git push
-        else
-          echo "✨ 資料庫無變動，無需更新。"
-        fi
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        git commit -m "🔄 自動更新快取與連霸記憶庫 [$(date '+%Y-%m-%d %H:%M:%S')]" -a || echo "No changes to commit"
+        git push origin main
