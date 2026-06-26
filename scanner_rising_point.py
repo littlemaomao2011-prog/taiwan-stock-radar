@@ -116,7 +116,7 @@ def stage0_weekly_filter(df_w):
     w_close = df_w["Close"].squeeze().astype(float)
     
     current_price = w_close.iloc[-1]
-    weekly_ma = w_close.rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
+    weekly_ma = w_close.rolling(weekly_ma_period).mean().iloc[-1] if 'weekly_ma_period' in globals() else w_close.rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
     
     if pd.isna(weekly_ma) or current_price < weekly_ma:
         return False
@@ -173,9 +173,123 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     if current_now_price < (prior_high * 0.96): return None
     
     # ------------------------------------------------------------
-    # 🎯 核心優化：前高 3 日平均量防禦機制
+    # 🎯 核心優化：前高 3 日平均量防禦機制 (已補齊右括號防呆)
     # ------------------------------------------------------------
     if current_now_price >= prior_high:
         try:
             prior_high_loc = d_vol.index.get_loc(prior_high_idx)
-            start_loc = max(0, prior_high_loc - 1
+            start_loc = max(0, prior_high_loc - 1)
+            end_loc = min(len(d_vol) - 1, prior_high_loc + 1)
+            
+            if (end_loc - start_loc + 1) < 3 and len(d_vol) >= 3:
+                if start_loc == 0: end_loc = 2
+                else: start_loc = len(d_vol) - 3
+                    
+            prior_high_3d_avg_vol = d_vol.iloc[start_loc:end_loc + 1].mean()
+        except:
+            prior_high_3d_avg_vol = d_vol.loc[prior_high_idx] 
+            
+        today_total_vol = d_vol.iloc[-1]
+        
+        if is_after_market:
+            if today_total_vol < prior_high_3d_avg_vol: return None
+        else:
+            if 9 <= current_hour <= 13:
+                passed_mins = (current_hour - 9) * 60 + current_minute
+                passed_mins = min(270.0, max(1.0, float(passed_mins)))
+                
+                if passed_mins <= 45:
+                    estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                    if estimated_today_vol < (prior_high_3d_avg_vol * 0.4): return None
+                else:
+                    estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                    if estimated_today_vol < prior_high_3d_avg_vol: return None  
+
+    stop_loss_price = round(min(prior_low, current_low), 2)
+    risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
+    dow_status = "↗️ 道氏真量突破" if current_now_price >= prior_high else "🔄 道氏底底高蓄勢"
+    
+    return {
+        "現價": current_now_price, "道氏形態": dow_status,
+        "防守價": stop_loss_price, "預估風險": f"{risk_pct}%"
+    }
+
+# ==========================================
+# 3. 法人級漏斗：第二、三階段「分K均線優先攔截」
+# ==========================================
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market):
+    required_cols = ["High", "Low", "Close", "Volume", "Open"]
+    if not all(col in df_60m.columns for col in required_cols): return None
+    
+    df_60m = df_60m.bfill().ffill()
+    if is_after_market and df_60m["Volume"].iloc[-1] == 0 and len(df_60m) >= 2:
+        df_60m = df_60m.iloc[:-1]
+
+    if len(df_60m) < 40: return None
+    
+    c_ser = df_60m["Close"].squeeze().astype(float)
+    h_ser = df_60m["High"].squeeze().astype(float)
+    l_ser = df_60m["Low"].squeeze().astype(float)
+    v_ser = df_60m["Volume"].squeeze().astype(float)
+    
+    c_p, v_p = float(c_ser.iloc[-1]), float(v_ser.iloc[-1])
+    
+    ma60 = c_ser.rolling(60).mean().iloc[-1]
+    if pd.isna(ma60) or c_p < ma60: return None
+    
+    ma20 = c_ser.rolling(20).mean()
+    std20 = c_ser.rolling(20).std()
+    bb_middle = float(ma20.iloc[-1])
+    if c_p < bb_middle: return None
+    bb_upper = float((ma20 + 2 * std20).iloc[-1])
+    
+    v_mean_20h = v_ser.tail(21).head(20).mean()
+    if not is_after_market and (9 <= current_hour <= 13):
+        passed_mins = max(1, current_minute)
+        time_multiplier = 60.0 / passed_mins
+        estimated_hour_vol = v_p * time_multiplier
+        vol_mult = round(estimated_hour_vol / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
+        
+        threshold = 0.4 if current_minute <= 45 and current_hour == 9 else 0.8
+        if vol_mult < threshold: return None
+    else:
+        vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
+
+    low_min = l_ser.rolling(60).min()
+    high_max = h_ser.rolling(60).max()
+    rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
+    k_series = rsv.ewm(com=2, adjust=False).mean() 
+    d_series = k_series.ewm(com=2, adjust=False).mean()
+    kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
+    if kv < 60.0 or kv <= dv: return None
+    
+    ema12 = c_ser.ewm(span=12, adjust=False).mean()
+    ema26 = c_ser.ewm(span=26, adjust=False).mean()
+    macd_diff = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
+    if macd_diff <= 0: return None
+    
+    chg = c_ser.diff()
+    su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
+    sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
+    sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
+    vr26 = ((su + 0.5 * sf) / (1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf))) * 100
+    if vr26 < 100.0: return None
+    
+    score = vol_mult * 10 + (50 if 150.0 <= vr26 <= 400.0 else -30)
+    
+    return {
+        "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
+        "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍(動態預估)" if not is_after_market else f"{vol_mult}倍",
+        "60分K值": round(kv, 1), "60分D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
+        "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
+        "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"]
+    }
+
+# ==========================================
+# 4. 多執行緒平行高效洗滌引擎
+# ==========================================
+def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
+    passed_day_stocks = {}
+    try:
+        data_d = yf.download(chunk, period="45d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
+        data_w = yf.download(chunk, period="26wk", interval="1wk", group_by="
