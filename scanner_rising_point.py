@@ -38,7 +38,7 @@ ATR_PERIOD = 14              # ATR 計算標準天數
 ATR_MULTIPLIER = 0.5         # Pivot Low 往下減的 ATR 倍數
 
 # ==========================================
-# 📊 第九個問題：台股產業焦點熱度板塊設定 (Sector Heat Mapping)
+# 📊 台股產業焦點熱度板塊設定 (Sector Heat Mapping)
 # ==========================================
 SECTOR_INDEXES = {
     "0053.TW": "💻 電子高科技半導體群",
@@ -69,7 +69,7 @@ def send_tg_msg(msg):
         print(f"❌ Telegram 網路連線失敗: {e}")
 
 # ==========================================
-# 🔥 獲取板塊熱度狀態 (強化欄位安全與對接解析版)
+# 🔥 獲取板塊熱度狀態
 # ==========================================
 def get_sector_heat_status():
     print("🔥 正在下載全市場核心板塊數據，計算熱度資金流向...")
@@ -116,15 +116,21 @@ def get_sector_heat_status():
 # ==========================================
 def check_market_filter_and_holiday():
     print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA)...")
+    market_pct = 0.0
     try:
         market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
         if not market_data_d.empty:
             if isinstance(market_data_d['Close'], pd.DataFrame):
                 twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
                 two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
+                twii_open_d = market_data_d["Open"]["^TWII"].dropna().astype(float)
             else:
                 twii_close_d = market_data_d["Close"].dropna().astype(float)
                 two_close_d = market_data_d["Close"].dropna().astype(float)
+                twii_open_d = market_data_d["Open"].dropna().astype(float)
+            
+            if not twii_close_d.empty and not twii_open_d.empty:
+                market_pct = ((twii_close_d.iloc[-1] - twii_open_d.iloc[-1]) / twii_open_d.iloc[-1]) * 100
             
             if len(twii_close_d) >= MARKET_MA_PERIOD and len(two_close_d) >= MARKET_MA_PERIOD:
                 twii_ma = twii_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
@@ -136,15 +142,15 @@ def check_market_filter_and_holiday():
                 two_perf = ((two_now_d - two_ma) / two_ma) * 100
                 
                 if twii_perf < MARKET_DROP_THRESHOLD and two_perf < MARKET_DROP_THRESHOLD:
-                    return "LOCK", f"🔴 <b>【極度危險】大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙雙跌破日K {MARKET_MA_PERIOD}MA 閥值！啟動鐵血空倉令！</b>"
+                    return "LOCK", f"🔴 <b>【極度危險】大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙雙跌破日K {MARKET_MA_PERIOD}MA 閥值！啟動鐵血空倉令！</b>", market_pct
                 elif twii_perf < MARKET_DROP_THRESHOLD or two_perf < MARKET_DROP_THRESHOLD:
                     weak_target = "大盤" if twii_perf < MARKET_DROP_THRESHOLD else "櫃買"
-                    return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K {MARKET_MA_PERIOD}MA 結構閥值！</b>"
+                    return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K {MARKET_MA_PERIOD}MA 結構閥值！</b>", market_pct
                 else:
-                    return "OK", f"🟢 <b>【多頭環境安全】大盤與櫃買穩守在日線 {MARKET_MA_PERIOD}MA 之上，雷達全力開火！</b>"
+                    return "OK", f"🟢 <b>【多頭環境安全】大盤與櫃買穩守在日線 {MARKET_MA_PERIOD}MA 之上，雷達全力開火！</b>", market_pct
     except Exception as e:
         print(f"ℹ️ 大盤下載異常 ({e})，自動切換至常規放行。")
-    return "OK", "🟢 <b>【常規安全放行】大盤連線受阻，自動轉為常規個股多頭掃描模式。</b>"
+    return "OK", "🟢 <b>【常規安全放行】大盤連線受阻，自動轉為常規個股多頭掃描模式。</b>", market_pct
 
 # ==========================================
 # 1. 官方網頁股票名單下載
@@ -281,7 +287,10 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
         "防守價": stop_loss_price, "預估風險": f"{risk_pct}%"
     }
 
-def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market):
+# ==========================================
+# 📊 第十個問題：100分制精準權重系統核心實作
+# ==========================================
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_is_hot, market_today_pct):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols): return None
     df_60m = df_60m.bfill().ffill()
@@ -304,6 +313,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     if c_p < bb_middle: return None
     bb_upper = float((ma20 + 2 * std20).iloc[-1])
     
+    # 4. Volume 小時量比
     v_mean_20h = v_ser.tail(21).head(20).mean()
     if not is_after_market and (9 <= current_hour <= 13):
         passed_mins = max(1, current_minute)
@@ -315,6 +325,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     else:
         vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
 
+    # 3. KD
     low_min = l_ser.rolling(60).min()
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
@@ -323,11 +334,15 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     if kv < 60.0 or kv <= dv: return None
     
+    # 2. MACD
     ema12 = c_ser.ewm(span=12, adjust=False).mean()
     ema26 = c_ser.ewm(span=26, adjust=False).mean()
-    macd_diff = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
+    macd_diff_series = ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()
+    macd_diff = float(macd_diff_series.iloc[-1])
+    macd_diff_prev = float(macd_diff_series.iloc[-2]) if len(macd_diff_series) >= 2 else 0.0
     if macd_diff <= 0: return None
     
+    # 5. VR
     chg = c_ser.diff()
     su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
     sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
@@ -335,7 +350,52 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     vr26 = ((su + 0.5 * sf) / (1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf))) * 100
     if vr26 < 100.0: return None
     
-    score = vol_mult * 10 + (50 if 150.0 <= vr26 <= 400.0 else -30)
+    # ==========================================
+    # 🧮 100分精密評分大腦
+    # ==========================================
+    score = 0
+    
+    # 1. Dow 道氏形態 (滿分 25)
+    if day_res["道氏形態"] == "↗️ 道氏真量突破": score += 25
+    else: score += 15
+        
+    # 2. MACD 動能放大 (滿分 15)
+    if macd_diff > macd_diff_prev: score += 15
+    else: score += 10
+        
+    # 3. KD 強勢程度 (滿分 15)
+    if kv >= 80: score += 15
+    else: score += 10
+        
+    # 4. Volume 量比層級 (滿分 15)
+    if vol_mult >= 2.5: score += 15
+    elif vol_mult >= 1.5: score += 10
+    else: score += 5
+        
+    # 5. VR 認同區間 (滿分 10)
+    if 150.0 <= vr26 <= 350.0: score += 10
+    elif vr26 > 350.0: score += 3
+    else: score += 6
+        
+    # 6. RS 相對大盤強度 (滿分 10)
+    try:
+        stock_open_p = float(df_60m["Open"].squeeze().astype(float).iloc[0])
+        stock_today_pct = ((c_p - stock_open_p) / stock_open_p) * 100
+    except:
+        stock_today_pct = 0.0
+    if stock_today_pct > market_today_pct: score += 10
+    else: score += 5
+        
+    # 7. ATR 風險係數 (滿分 5)
+    try: risk_val = float(day_res["預估風險"].replace("%", ""))
+    except: risk_val = 10.0
+    if risk_val <= 7.0: score += 5
+    elif risk_val <= 12.0: score += 3
+    else: score += 1
+        
+    # 8. Market 板塊熱度 (滿分 5)
+    if sector_is_hot: score += 5
+    else: score += 2
     
     return {
         "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
@@ -380,7 +440,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v3.0 完美編譯穩定版】...")
+    print("🚀 啟動【台股 666 精選雷達 v3.1 百分制完全進化版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -397,7 +457,7 @@ if __name__ == "__main__":
         if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
         if os.path.exists(MEMORY_FILE): os.remove(MEMORY_FILE)
 
-    filter_status, filter_msg = check_market_filter_and_holiday()
+    filter_status, filter_msg, market_today_pct = check_market_filter_and_holiday()
     if filter_status == "LOCK":
         send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
         exit(0)
@@ -484,8 +544,11 @@ if __name__ == "__main__":
                         if df_stock_60m.empty: continue
                         df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
                         
-                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market)
                         sid = str(stock_map[ticker]["sid"])
+                        sector_name = get_stock_sector_name(sid)
+                        sector_info = sector_heat_map.get(sector_name, {"is_hot": True, "desc": "✨ 友善放行"})
+                        
+                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info["is_hot"], market_today_pct)
                         
                         cache_info = {
                             "ticker": sid, "timestamp": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
@@ -540,7 +603,8 @@ if __name__ == "__main__":
             sector_name = get_stock_sector_name(sid_str)
             sector_info = sector_heat_map.get(sector_name, {"is_hot": True, "desc": "✨ 友善放行"})
             
-            if len(top_list) < 5 and sector_info["is_hot"]:
+            # 放寬限制：不管板塊熱不熱，只要排序前 5 名的高分個股一律進入核心特攻！
+            if len(top_list) < 5:
                 tag = ""
                 mem_row = df_mem[df_mem["stock_id"] == sid_str]
                 total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
@@ -549,7 +613,7 @@ if __name__ == "__main__":
                 elif len(last_run_sids) == 0: tag = " 🚀【雷達初次偵測】"
                     
                 top_list.append(
-                    f"🔥 <b>【核心特攻】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
+                    f"🔥 <b>【核心特攻】★ {row['代碼']} {row['名稱']} ★ (評分: {int(row['score'])}分)</b>{tag}\n"
                     f" 🎯 歸屬板塊: <b>{sector_name} ({sector_info['desc']})</b>\n"
                     f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 {WEEKLY_MA_PERIOD}MA 保護)</b>\n"
                     f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
@@ -560,7 +624,7 @@ if __name__ == "__main__":
             else:
                 status_hot_tag = "🔥主流" if sector_info["is_hot"] else "❄️非主流"
                 standard_list.append(
-                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']}</b> ({status_hot_tag})\n"
+                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']} (評分: {int(row['score'])}分)</b> ({status_hot_tag})\n"
                     f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | 防守: {row['防守價']} ({row['預估風險']})"
                 )
         
