@@ -1,66 +1,53 @@
-name: Taiwan Stock 666 Scanner
+name: 🛰️ 台灣個股多頭雷達自動排程
 
 on:
+  # ⏱️ 定時排程：每 30 分鐘執行一次
+  # (GitHub Actions 的 cron 使用 UTC 時間，台股開盤時間為台灣時間 09:00 - 13:30，換算 UTC 為 01:00 - 05:30)
   schedule:
-    - cron: '5 1 * * 1-5'   # 09:05
-    - cron: '30 1 * * 1-5'  # 09:30
-    - cron: '50 1 * * 1-5'  # 09:50
-    - cron: '15 2 * * 1-5'  # 10:15
-    - cron: '35 2 * * 1-5'  # 10:35
-    - cron: '0 3 * * 1-5'   # 11:00
-    - cron: '30 3 * * 1-5'  # 11:30
-    - cron: '0 4 * * 1-5'   # 12:00
-    - cron: '30 4 * * 1-5'  # 12:30
-    - cron: '0 5 * * 1-5'   # 13:00
-    - cron: '20 5 * * 1-5'  # 13:20
-  workflow_dispatch:        
+    - cron: '*/30 1-5 * * 1-5'
+  
+  # 🚀 手動觸發：讓你可以隨時在 GitHub 網頁上點擊 "Run workflow" 測試
+  workflow_dispatch:
 
 jobs:
-  scan:
+  run-radar:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write       
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+    # Step 1: 檢查並拉取專案程式碼
+    - name: 檢查程式碼 (Checkout)
+      uses: actions/checkout@v3
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
+    # Step 2: 設定 Python 環境
+    - name: 設定 Python 環境
+      uses: actions/setup-python@v4
       with:
         python-version: '3.10'
-        cache: 'pip'
+        cache: 'pip' # 開啟快取加速後續執行
 
-    - name: Install dependencies
+    # Step 3: 🔥 核心關鍵！下載、編譯並安裝 TA-Lib 的 C++ 底層庫，解決 ModuleNotFoundError
+    - name: 下載與編譯 TA-Lib 底層 C++ 庫
+      run: |
+        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+        tar -xzf ta-lib-0.4.0-src.tar.gz
+        cd ta-lib/
+        ./configure --prefix=/usr
+        make
+        sudo make install
+        cd ..
+        rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+
+    # Step 4: 安裝 Python 相關套件（包含 TA-Lib 封裝庫、yfinance 等）
+    - name: 安裝 Python 套件依赖
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance pandas numpy requests lxml openpyxl
+        pip install TA-Lib
+        pip install yfinance requests pandas
 
-    - name: Run scanner
+    # Step 5: 🚀 執行你的雷達主程式
+    - name: 執行多頭雷達程式 (scanner_rising_point.py)
       env:
-        PYTHONUNBUFFERED: "1"
+        # 讀取你在 GitHub Repository Secrets 裡設定的 Telegram 憑證
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       run: python scanner_rising_point.py
-
-    - name: Commit and Push memory changes
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-        
-        if [ ! -f stock_memory.csv ]; then
-          echo "stock_id,last_run,total_count" > stock_memory.csv
-        fi
-        
-        if git status --porcelain | grep -qE "stock_memory.csv|scan_cache.csv"; then
-          # 在提交前拉取最新遠端，降低衝突機率
-          git pull --rebase origin main || true
-          
-          git add stock_memory.csv scan_cache.csv
-          git commit -m "🔄 自動更新盤中雷達記憶庫與快取數據 [Skip CI]"
-          
-          # 💡 終極防護牆：後方加上 || true，就算因排程重疊被 rejected 也不會報錯中斷工作流
-          echo "🚀 正在同步最新雷達數據至 GitHub..."
-          git push origin main || true
-          echo "✅ 雷達數據同步程序執行完畢！"
-        else
-          echo "✨ 記憶庫與快取數據無任何變動，跳過推送。"
-        fi
