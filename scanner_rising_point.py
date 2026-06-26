@@ -153,7 +153,7 @@ def check_market_filter_and_holiday():
     return "OK", "🟢 大盤連線受阻，常規放行", market_pct
 
 # ==========================================
-# 1. 穩定版台股股票名單（採用高彈性本地生成機制）
+# 1. 穩定版台股股票名單（高彈性本地生成機制）
 # ==========================================
 def get_all_taiwan_stocks_official():
     stock_dict = {}
@@ -405,7 +405,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         "60分K值": round(kv, 1), "60分D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
         "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
-        "今日漲幅": day_res["今日漲幅"], "距離上軌": final_res["距離上軌"] if 'final_res' in locals() else dist_to_bb_upper_str,
+        "今日漲幅": day_res["今日漲幅"], "距離上軌": dist_to_bb_upper_str,
         "KD趨勢": f"K{round(kv,1)}/D{round(dv,1)} {kd_trend}", "VR趨勢": f"{round(vr26,1)}% {vr_trend}"
     }
 
@@ -444,7 +444,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v3.4 趨勢大腦版】...")
+    print("🚀 啟動【台股 666 精選雷達 v3.5 終極快取修正版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -605,7 +605,6 @@ if __name__ == "__main__":
             total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
             if total_seen >= 2: tag = f"🔥【連霸 {total_seen} 輪】"
                 
-            # ⭐ 前五核心特攻（包含趨勢箭頭顯示）
             if len(top_list) < 5:
                 top_list.append(
                     f"⭐ <b>{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> {tag}\n"
@@ -616,7 +615,6 @@ if __name__ == "__main__":
                     f" ➔ 空間: 距上軌 <b>{row['距離上軌']}</b>\n"
                     f" ➔ 戰術: 守 <b>{row['防守價']}</b> (距停損: <b>{row['預估風險']}</b>)\n"
                 )
-            # 🚨 標準續報名單（同樣精煉補上指標趨勢）
             else:
                 status_hot_tag = "🔥" if sector_info["is_hot"] else "❄️"
                 standard_list.append(
