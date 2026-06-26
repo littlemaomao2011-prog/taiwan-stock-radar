@@ -98,27 +98,31 @@ def get_sector_heat_status():
                     h_p = float(df_s["High"].iloc[-1])
                     v_p = float(df_s["Volume"].iloc[-1])
                     
+                    # 1. 價格動能計算 (最高 30 分)
                     pct = ((c_p - o_p) / o_p) * 100
-                    ma5 = df_s["Close"].tail(5).mean()
-                    ma10 = df_s["Close"].tail(10).mean()
-                    v_ma5 = df_s["Volume"].iloc[:-1].tail(5).mean()
-                    high_20d = df_s["High"].iloc[:-1].tail(20).max()
-                    
                     h_score = 0
                     if pct >= 2.0: h_score += 30
                     elif pct >= 0.5: h_score += 15
                     elif pct > 0: h_score += 5
                     
+                    # 2. 均線結構計算 (最高 30 分)
+                    ma5 = df_s["Close"].tail(5).mean()
+                    ma10 = df_s["Close"].tail(10).mean()
                     if c_p >= ma5 and ma5 >= ma10: h_score += 30
                     elif c_p >= ma5: h_score += 15
                     
+                    # 3. 成交量動能計算 (最高 20 分)
+                    v_ma5 = df_s["Volume"].iloc[:-1].tail(5).mean()
                     if v_ma5 > 0:
                         v_ratio = v_p / v_ma5
                         if v_ratio >= 1.5: h_score += 20
                         elif v_ratio >= 1.0: h_score += 10
                     
+                    # 4. 型態突破計算 (最高 20 分)
+                    high_20d = df_s["High"].iloc[:-1].tail(20).max()
                     if h_p >= high_20d: h_score += 20
                     
+                    # 根據總分判定熱度級別
                     if h_score >= 75: desc = f"💥超級狂熱 ({h_score}分)"
                     elif h_score >= 50: desc = f"🔥主力聚焦 ({h_score}分)"
                     elif h_score >= 25: desc = f"⛅溫和收納 ({h_score}分)"
@@ -138,11 +142,12 @@ def get_sector_heat_status():
     return heat_map
 
 # ==========================================
-# 0. 大盤風控與環境結構驗證
+# 0. 大盤風控與環境結構驗證 + 獲取大盤 20 日波段漲幅
 # ==========================================
 def check_market_filter_and_holiday():
     print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA)...")
     market_pct = 0.0
+    market_20d_pct = 0.0  # 新增：大盤 20 日累積漲跌幅
     try:
         market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
         if not market_data_d.empty:
@@ -158,6 +163,10 @@ def check_market_filter_and_holiday():
             if not twii_close_d.empty and not twii_open_d.empty:
                 market_pct = ((twii_close_d.iloc[-1] - twii_open_d.iloc[-1]) / twii_open_d.iloc[-1]) * 100
             
+            if len(twii_close_d) >= 20:
+                # 計算大盤近 20 天累積漲幅 (今日收盤相較於 20 天前的收盤)
+                market_20d_pct = ((twii_close_d.iloc[-1] - twii_close_d.iloc[-20]) / twii_close_d.iloc[-20]) * 100
+
             if len(twii_close_d) >= MARKET_MA_PERIOD and len(two_close_d) >= MARKET_MA_PERIOD:
                 twii_ma = twii_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
                 two_ma = two_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
@@ -168,15 +177,15 @@ def check_market_filter_and_holiday():
                 two_perf = ((two_now_d - two_ma) / two_ma) * 100
                 
                 if twii_perf < MARKET_DROP_THRESHOLD and two_perf < MARKET_DROP_THRESHOLD:
-                    return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！", market_pct
+                    return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！", market_pct, market_20d_pct
                 elif twii_perf < MARKET_DROP_THRESHOLD or two_perf < MARKET_DROP_THRESHOLD:
                     weak_target = "大盤" if twii_perf < MARKET_DROP_THRESHOLD else "櫃買"
-                    return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！", market_pct
+                    return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！", market_pct, market_20d_pct
                 else:
-                    return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上", market_pct
+                    return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上", market_pct, market_20d_pct
     except Exception as e:
         print(f"ℹ️ 大盤下載異常 ({e})，自動切換至常規放行。")
-    return "OK", "🟢 大盤連線受阻，常規放行", market_pct
+    return "OK", "🟢 大盤連線受阻，常規放行", market_pct, market_20d_pct
 
 # ==========================================
 # 1. 防阻擋、全功能台股名單下載引擎
@@ -280,6 +289,9 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     if current_low < prior_low: return None            
     if current_now_price < (prior_high * 0.96): return None
     
+    # 新增：計算個股 20 日累積漲跌幅 (供後續精密 RS 計算使用)
+    stock_20d_pct = ((d_close.iloc[-1] - d_close.iloc[-20]) / d_close.iloc[-20]) * 100 if len(d_close) >= 20 else 0.0
+    
     if current_now_price >= prior_high:
         dow_status = "今日突破 ↗️"
         try:
@@ -334,10 +346,11 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     
     return {
         "現價": current_now_price, "道氏形態": dow_status,
-        "防守價": stop_loss_price, "預估風險": f"{risk_pct}%", "今日漲幅": f"{today_pct:+.1f}%"
+        "防守價": stop_loss_price, "預估風險": f"{risk_pct}%", "今日漲幅": f"{today_pct:+.1f}%",
+        "個股20日漲幅": stock_20d_pct
     }
 
-def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_info, market_today_pct):
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_info, market_20d_pct):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols): return None
     df_60m = df_60m.bfill().ffill()
@@ -403,9 +416,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     if vr26 < 100.0: return None
     vr_trend = "↗️" if vr26 >= vr26_prev else "↘️"
     
-    # ==========================================
     # 🧮 100分精密評分大腦
-    # ==========================================
     score = 0
     if day_res["道氏形態"] == "今日突破 ↗️": score += 25
     else: score += 15
@@ -419,20 +430,22 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     if 150.0 <= vr26 <= 350.0: score += 10
     elif vr26 > 350.0: score += 3
     else: score += 6
-    try:
-        stock_open_p = float(df_60m["Open"].squeeze().astype(float).iloc[0])
-        stock_today_pct = ((c_p - stock_open_p) / stock_open_p) * 100
-    except:
-        stock_today_pct = 0.0
-    if stock_today_pct > market_today_pct: score += 10
-    else: score += 5
+    
+    # 📈 精密升級：20 日波段相對強度差額 (Relative Strength Spread)
+    stock_20d = day_res.get("個股20日漲幅", 0.0)
+    rs_spread = stock_20d - market_20d_pct
+    if rs_spread >= 15.0: score += 10      # 超級飆股，獨領風騷 (+10分)
+    elif rs_spread >= 5.0: score += 7      # 顯著強於大盤，主力拉抬 (+7分)
+    elif rs_spread >= 0.0: score += 4      # 略強於大盤，穩健抗跌 (+4分)
+    else: score += 0                       # 弱於大盤 (不給分)
+    
     try: risk_val = float(day_res["預估風險"].replace("%", ""))
     except: risk_val = 10.0
     if risk_val <= 7.0: score += 5
     elif risk_val <= 12.0: score += 3
     else: score += 1
     
-    # 精密板塊分數連動給分
+    # 精密板塊分數連動給分 (依據板塊 Heat Score 額外賦予個股權重)
     sector_score = sector_info.get("score", 50)
     if sector_score >= 75: score += 5      
     elif sector_score >= 50: score += 4    
@@ -443,7 +456,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
         "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍" + ("(預估)" if not is_after_market else ""),
         "60分K值": round(kv, 1), "60分D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
-        "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
+        "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score, "RS值": f"{rs_spread:+.1f}%",
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
         "今日漲幅": day_res["今日漲幅"], "距離上軌": dist_to_bb_upper_str,
         "KD趨勢": f"K{round(kv,1)}/D{round(dv,1)} {kd_trend}", "VR趨勢": f"{round(vr26,1)}% {vr_trend}"
@@ -498,7 +511,7 @@ if __name__ == "__main__":
         if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
         if os.path.exists(MEMORY_FILE): os.remove(MEMORY_FILE)
 
-    filter_status, filter_msg, market_today_pct = check_market_filter_and_holiday()
+    filter_status, filter_msg, market_today_pct, market_20d_pct = check_market_filter_and_holiday()
     if filter_status == "LOCK":
         send_tg_msg(f"🔔 <b>【台股 666 風控回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 鐵血空倉鎖倉！")
         exit(0)
@@ -561,7 +574,8 @@ if __name__ == "__main__":
                                 "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
                                 "道氏形態": str(day_passed_pool[ticker]["道氏形態"]), "防守價": round(float(day_passed_pool[ticker]["防守價"]), 2), "預估風險": str(day_passed_pool[ticker]["預估風險"]),
                                 "今日漲幅": str(day_passed_pool[ticker]["今日漲幅"]), "距離上軌": str(c_data.get("dist_to_bb_str", "計算中")),
-                                "KD趨勢": str(c_data.get("kd_trend_str", "N/A")), "VR趨勢": str(c_data.get("vr_trend_str", "N/A")), "小時量比": str(c_data["vol_str"])
+                                "KD趨勢": str(c_data.get("kd_trend_str", "N/A")), "VR趨勢": str(c_data.get("vr_trend_str", "N/A")), "小時量比": str(c_data["vol_str"]),
+                                "RS值": str(c_data.get("rs_val_str", "N/A"))
                             })
                         new_cache_rows.append(c_data)
                         continue
@@ -591,7 +605,7 @@ if __name__ == "__main__":
                         sector_name = get_stock_sector_name(sid)
                         sector_info = sector_heat_map.get(sector_name, {"score": 50, "is_hot": True, "desc": "✨"})
                         
-                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct)
+                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_20d_pct)
                         
                         if final_res:
                             cache_info = {
@@ -601,7 +615,8 @@ if __name__ == "__main__":
                                 "kv": final_res["60分K值"], "dv": final_res["60分D值"], "macd_diff": final_res["MACD柱"],
                                 "vol_str": final_res["小時量比"], "vr_str": final_res["VR值"], "score": final_res["score"],
                                 "vol_mult": final_res["小時量比數字"], "dist_to_bb_str": final_res["距離上軌"],
-                                "kd_trend_str": final_res["KD趨勢"], "vr_trend_str": final_res["VR趨勢"]
+                                "kd_trend_str": final_res["KD趨勢"], "vr_trend_str": final_res["VR趨勢"],
+                                "rs_val_str": final_res["RS值"]
                             }
                             new_cache_rows.append(cache_info)
 
@@ -611,7 +626,8 @@ if __name__ == "__main__":
                                 "score": final_res["score"], "量比數字": final_res["小時量比數字"],
                                 "道氏形態": final_res["道氏形態"], "防守價": round(final_res["防守價"], 2), "預估風險": final_res["預估風險"],
                                 "今日漲幅": final_res["今日漲幅"], "距離上軌": final_res["距離上軌"],
-                                "KD趨勢": final_res["KD趨勢"], "VR趨勢": final_res["VR趨勢"], "小時量比": final_res["小時量比"]
+                                "KD趨勢": final_res["KD趨勢"], "VR趨勢": final_res["VR趨勢"], "小時量比": final_res["小時量比"],
+                                "RS值": final_res["RS值"]
                             })
                     except:
                         continue
@@ -650,6 +666,7 @@ if __name__ == "__main__":
                     f"⭐ <b>{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> {tag}\n"
                     f" ➔ 板塊: {sector_name} (<b>{sector_info['desc']}</b>)\n"
                     f" ➔ 價格: <b>{row['現價']}</b> (今日漲幅: <b>{row['今日漲幅']}</b>)\n"
+                    f" ➔ 強度: 20日相對大盤 RS: <b>{row['RS值']}</b>\n"
                     f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
                     f" ➔ 指標: KD <b>{row['KD趨勢']}</b>\n"
                     f" ➔ 空間: 距上軌 <b>{row['距離上軌']}</b>\n"
@@ -658,7 +675,7 @@ if __name__ == "__main__":
             else:
                 standard_list.append(
                     f"🚨 <b>【標準666】{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> ➔ {sector_info['desc']}\n"
-                    f" ➔ 價: {row['現價']} ({row['今日漲幅']}) | 量比: {row['小時量比']} | VR: {row['VR趨勢']} | KD: {row['KD趨勢']} | 距上軌: {row['距離上軌']} | 守: {row['防守價']} ({row['預估風險']})"
+                    f" ➔ 價: {row['現價']} ({row['今日漲幅']}) | RS: {row['RS值']} | 量比: {row['小時量比']} | VR: {row['VR趨勢']} | KD: {row['KD趨勢']} | 距上軌: {row['距離上軌']} | 守: {row['防守價']} ({row['預估風險']})"
                 )
         
         if top_list: send_tg_msg(header_msg + "\n".join(top_list))
