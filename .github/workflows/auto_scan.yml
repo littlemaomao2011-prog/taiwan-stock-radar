@@ -1,41 +1,66 @@
-name: Taiwan Stock Radar
+name: Taiwan Stock Radar System
 
 on:
   schedule:
-    - cron: '35 1,6 * * 1-5' # 舉例：盤中與盤後定時執行
-  workflow_dispatch: # 允許手動觸發
+    # 💡 預設排程：台股交易日（週一至週五）
+    # 盤中特攻：國際時間 01:35 (台北時間 09:35)
+    # 盤後選股：國際時間 06:35 (台北時間 14:35)
+    - cron: '35 1,6 * * 1-5'
+  workflow_dispatch: # 允許隨時在 GitHub 網頁上手動點擊「Run workflow」觸發
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
     
-    # ✨ 關鍵就是補上這兩行，允許這個工作流有權限 Push 程式碼與檔案回儲存庫
+    # ✨ 核心權限補丁：強制賦予虛擬機具有 Git Push 回寫儲存庫的權限
     permissions:
       contents: write
 
     steps:
-    - name: Checkout repository
+    - name: 📥 複製儲存庫代碼 (Checkout)
       uses: actions/checkout@v4
 
-    - name: Set up Python
+    - name: 🐍 初始化 Python 環境
       uses: actions/setup-python@v5
       with:
-        python-python: '3.10'
+        python-version: '3.10'
         cache: 'pip'
 
-    - name: Install dependencies
+    - name: 🛠️ 自動下載並編譯安裝 TA-Lib C 語言核心與套件
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        
+        echo "⏳ 正在下載 TA-Lib 核心 C 語言原始碼..."
+        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+        tar -xzf ta-lib-0.4.0-src.tar.gz
+        
+        echo "⏳ 開始編譯 TA-Lib 底層函式庫 (此步驟約需 30 秒)..."
+        cd ta-lib/
+        ./configure --prefix=/usr
+        make
+        sudo make install
+        
+        echo "✨ TA-Lib 底層 C 庫安裝成功，清理環境..."
+        cd ..
+        rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+        
+        echo "⏳ 開始安裝 Python 依賴套件與 TA-Lib 封裝層..."
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        pip install TA-Lib
 
-    - name: Run Scanner
+    - name: 🚀 執行台股 666 精選雷達
       run: python scanner_rising_point.py
 
-    # 你的 Git Commit & Push 步驟
-    - name: Commit and Push changes
+    - name: 🔄 自動回寫快取與連霸記憶庫至 GitHub (Commit & Push)
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "github-actions[bot]"
+        
+        # 檢查是否有檔案更新，避免無異動時 Push 報錯
         git add scan_cache.csv stock_memory.csv || true
-        git commit -m "🔄 自動更新快取與連霸記憶庫 [$(date '+%Y-%m-%d %H:%M:%S')]" -a || echo "No changes to commit"
+        
+        # 提交異動，若無檔案變更則安靜放行
+        git commit -m "🔄 自動更新快取與連霸記憶庫 [$(date '+%Y-%m-%d %H:%M:%S')]" -a || echo "ℹ️ 本輪數據無異動，無需更新儲存庫。"
+        
+        # 推送回主分支
         git push origin main
