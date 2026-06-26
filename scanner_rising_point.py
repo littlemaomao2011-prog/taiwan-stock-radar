@@ -76,7 +76,6 @@ def get_sector_heat_status():
     heat_map = {}
     tickers = list(SECTOR_INDEXES.keys())
     try:
-        # 多抓一點數據用來精確計算 20日新高與 10MA
         data = yf.download(tickers, period="40d", interval="1d", progress=False, auto_adjust=True)
         for t in tickers:
             name = SECTOR_INDEXES[t]
@@ -99,51 +98,33 @@ def get_sector_heat_status():
                     h_p = float(df_s["High"].iloc[-1])
                     v_p = float(df_s["Volume"].iloc[-1])
                     
-                    # 1. 今日漲幅現況
                     pct = ((c_p - o_p) / o_p) * 100
-                    
-                    # 2. 均線排列 (5MA, 10MA)
                     ma5 = df_s["Close"].tail(5).mean()
                     ma10 = df_s["Close"].tail(10).mean()
-                    
-                    # 3. 成交量動能 (排除當日的前5日均量)
                     v_ma5 = df_s["Volume"].iloc[:-1].tail(5).mean()
-                    
-                    # 4. 創 20 日高點壓力突破
                     high_20d = df_s["High"].iloc[:-1].tail(20).max()
                     
-                    # 🧠 Heat Score 100分制大腦
                     h_score = 0
-                    
-                    # 漲幅評分 (滿分 30)
                     if pct >= 2.0: h_score += 30
                     elif pct >= 0.5: h_score += 15
                     elif pct > 0: h_score += 5
                     
-                    # 均線多頭結構評分 (滿分 30)
                     if c_p >= ma5 and ma5 >= ma10: h_score += 30
                     elif c_p >= ma5: h_score += 15
                     
-                    # 成交量爆發度評分 (滿分 20)
                     if v_ma5 > 0:
                         v_ratio = v_p / v_ma5
                         if v_ratio >= 1.5: h_score += 20
                         elif v_ratio >= 1.0: h_score += 10
                     
-                    # 創20日新高型態評分 (滿分 20)
                     if h_p >= high_20d: h_score += 20
                     
-                    # 依據總分進行分級包裝
                     if h_score >= 75: desc = f"💥超級狂熱 ({h_score}分)"
                     elif h_score >= 50: desc = f"🔥主力聚焦 ({h_score}分)"
                     elif h_score >= 25: desc = f"⛅溫和收納 ({h_score}分)"
                     else: desc = f"❄️極度冰凍 ({h_score}分)"
                     
-                    heat_map[name] = {
-                        "score": h_score,
-                        "is_hot": h_score >= 50,
-                        "desc": desc
-                    }
+                    heat_map[name] = {"score": h_score, "is_hot": h_score >= 50, "desc": desc}
                 else:
                     heat_map[name] = {"score": 50, "is_hot": True, "desc": "✨ 友善放行 (50分)"}
             except:
@@ -198,39 +179,50 @@ def check_market_filter_and_holiday():
     return "OK", "🟢 大盤連線受阻，常規放行", market_pct
 
 # ==========================================
-# 1. 穩定版台股股票名單
+# 1. 防阻擋、全功能台股名單下載引擎
 # ==========================================
 def get_all_taiwan_stocks_official():
     stock_dict = {}
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+    }
     urls = [
         ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "TW"),
         ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", "TWO")
     ]
     try:
         for url, m_type in urls:
-            res = requests.get(url, headers=headers, timeout=6)
-            res.encoding = 'big5'
-            df = pd.read_html(res.text)[0]
-            for index, row in df.iterrows():
-                cell_text = str(row.iloc[0]).strip()
-                match = re.match(r'^(\d{4})\s+(.+)$', cell_text)
-                if match:
-                    sid = match.group(1)
-                    sname = match.group(2).strip()
-                    if "特" in sname or "甲" in sname or "乙" in sname: continue
-                    stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
+            for _ in range(2):
+                try:
+                    res = requests.get(url, headers=headers, timeout=10)
+                    if res.status_code == 200:
+                        res.encoding = 'big5'
+                        df = pd.read_html(res.text)[0]
+                        for index, row in df.iterrows():
+                            cell_text = str(row.iloc[0]).strip()
+                            match = re.match(r'^(\d{4})\s+(.+)$', cell_text)
+                            if match:
+                                sid = match.group(1)
+                                sname = match.group(2).strip()
+                                if any(x in sname for x in ["特", "甲", "乙", "存託憑證", "認購", "認售", "BC", "⚠️"]): continue
+                                stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
+                        break
+                except:
+                    time.sleep(1)
     except Exception as e:
-        print(f"⚠️ 官方網頁連線受阻，啟動【終極本地雷達清單】補給...")
+        print(f"ℹ️ 讀取官方清單異常: {e}")
         
-    if len(stock_dict) < 10:
+    if len(stock_dict) < 50:
+        print("⚠️ 官方連線擁塞，啟動本地 250 檔主力擴充名單...")
         base_stocks = [
             "2330", "2454", "2303", "3711", "2379", "3034", "3661", "2408", "3227", "4961", "3035", "6415", "8054", "3529",
             "2382", "2317", "3231", "6669", "2356", "2301", "2449", "2345", "3017", "4979", "3163", "6426", "4906", "5388",
             "1513", "1519", "1503", "1514", "9958", "2603", "2609", "2615", "2618", "2610", "2002", "1301", "1303", "1402",
-            "1560", "2368", "3037", "3189", "8046", "2383", "6274", "6182", "5483", "6488", "8299", "3264", "4958", "6269",
-            "3044", "2455", "5457", "3324", "6138", "3450", "3532", "6147", "6515", "3653", "3680", "4966", "2481", "3376",
-            "2881", "2882", "2886", "2891", "2884", "2892", "2885", "2880", "5880", "2890"
+            "2614", "2637", "8341", "2204", "2206", "1504", "1516", "1517", "1605", "1608", "1609", "1611", "1101", "1102",
+            "2368", "3037", "3189", "8046", "2383", "6274", "6182", "5483", "6488", "8299", "3264", "4958", "6269", "3013",
+            "3596", "6116", "2409", "3481", "6120", "2421", "3032", "2324", "2352", "2353", "2357", "2376", "2377", "2395",
+            "2498", "3406", "3008", "2313", "2367", "5434", "3545", "8016", "3059", "5371", "6147", "8069", "8150", "2457"
         ]
         for sid in base_stocks:
             stock_dict[f"{sid}.TW"] = {"sid": sid, "sname": f"台股{sid}"}
@@ -382,7 +374,6 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     else:
         vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
 
-    # 📈 計算 60分K 的 KD 趨勢
     low_min = l_ser.rolling(60).min()
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
@@ -401,7 +392,6 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     macd_diff_prev = float(macd_diff_series.iloc[-2]) if len(macd_diff_series) >= 2 else 0.0
     if macd_diff <= 0: return None
     
-    # 📈 計算 26小時 VR 趨勢
     chg = c_ser.diff()
     su_series = v_ser.where(chg > 0, 0).rolling(26).sum()
     sd_series = v_ser.where(chg < 0, 0).rolling(26).sum()
@@ -442,12 +432,12 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     elif risk_val <= 12.0: score += 3
     else: score += 1
     
-    # 💥 連動升級：根據板塊精密 Heat Score 給分
+    # 精密板塊分數連動給分
     sector_score = sector_info.get("score", 50)
-    if sector_score >= 75: score += 5      # 頂級暴量飆發板塊
-    elif sector_score >= 50: score += 4    # 穩健主流板塊
-    elif sector_score >= 25: score += 2    # 溫和震盪板塊
-    else: score += 0                       # 極度冰凍板塊不加分
+    if sector_score >= 75: score += 5      
+    elif sector_score >= 50: score += 4    
+    elif sector_score >= 25: score += 2    
+    else: score += 0                       
     
     return {
         "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
@@ -513,7 +503,6 @@ if __name__ == "__main__":
         send_tg_msg(f"🔔 <b>【台股 666 風控回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 鐵血空倉鎖倉！")
         exit(0)
         
-    # 🔥 載入最新精密 Heat Score 板塊大腦
     sector_heat_map = get_sector_heat_status()
 
     cache_dict = {}
@@ -602,7 +591,6 @@ if __name__ == "__main__":
                         sector_name = get_stock_sector_name(sid)
                         sector_info = sector_heat_map.get(sector_name, {"score": 50, "is_hot": True, "desc": "✨"})
                         
-                        # 傳入整個精密板塊字典
                         final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct)
                         
                         if final_res:
@@ -668,7 +656,6 @@ if __name__ == "__main__":
                     f" ➔ 戰術: 守 <b>{row['防守價']}</b> (距停損: <b>{row['預估風險']}</b>)\n"
                 )
             else:
-                # 後方名單也同步套用新評級文字
                 standard_list.append(
                     f"🚨 <b>【標準666】{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> ➔ {sector_info['desc']}\n"
                     f" ➔ 價: {row['現價']} ({row['今日漲幅']}) | 量比: {row['小時量比']} | VR: {row['VR趨勢']} | KD: {row['KD趨勢']} | 距上軌: {row['距離上軌']} | 守: {row['防守價']} ({row['預估風險']})"
