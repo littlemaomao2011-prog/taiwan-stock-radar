@@ -178,22 +178,15 @@ def get_all_taiwan_stocks_official():
     except Exception as e:
         print(f"⚠️ 官方網頁連線受阻，啟動【終極本地雷達清單】補給...")
         
-    # 如果證交所阻擋，自動載入 150 檔最具代表性的台股主力、流動性標的名單
     if len(stock_dict) < 10:
         base_stocks = [
-            # 權值半導體、IC設計
             "2330", "2454", "2303", "3711", "2379", "3034", "3661", "2408", "3227", "4961", "3035", "6415", "8054", "3529",
-            # AI伺服器、網通、光通訊
             "2382", "2317", "3231", "6669", "2356", "2301", "2449", "2345", "3017", "4979", "3163", "6426", "4906", "5388",
-            # 重電、傳產主流、綠能
             "1513", "1519", "1503", "1514", "9958", "2603", "2609", "2615", "2618", "2610", "2002", "1301", "1303", "1402",
-            # 中小型妖股、熱門技術面股
             "1560", "2368", "3037", "3189", "8046", "2383", "6274", "6182", "5483", "6488", "8299", "3264", "4958", "6269",
             "3044", "2455", "5457", "3324", "6138", "3450", "3532", "6147", "6515", "3653", "3680", "4966", "2481", "3376",
-            # 金融權值
             "2881", "2882", "2886", "2891", "2884", "2892", "2885", "2880", "5880", "2890"
         ]
-        # 透過多執行緒快速補齊名稱，確保雷達依然滿載運作
         for sid in base_stocks:
             stock_dict[f"{sid}.TW"] = {"sid": sid, "sname": f"台股{sid}"}
             stock_dict[f"{sid}.TWO"] = {"sid": sid, "sname": f"櫃買{sid}"}
@@ -218,7 +211,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     if len(df_d) < 25: return None
         
     historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
-    if len(historical_vols) < 5 or historical_vols.mean() < 100: return None # 調整過濾閥值以相容備援模式
+    if len(historical_vols) < 5 or historical_vols.mean() < 100: return None
         
     d_close = df_d["Close"].squeeze().astype(float)
     d_high = df_d["High"].squeeze().astype(float)
@@ -333,7 +326,6 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     dist_to_bb_upper_pct = ((bb_upper - c_p) / c_p) * 100
     dist_to_bb_upper_str = f"{dist_to_bb_upper_pct:+.1f}%" if dist_to_bb_upper_pct > 0 else "已突破上軌 🚀"
     
-    # 4. Volume 小時量比
     v_mean_20h = v_ser.tail(21).head(20).mean()
     if not is_after_market and (9 <= current_hour <= 13):
         passed_mins = max(1, current_minute)
@@ -345,16 +337,18 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     else:
         vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
 
-    # 3. KD
+    # 📈 計算 60分K 的 KD 趨勢
     low_min = l_ser.rolling(60).min()
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
     k_series = rsv.ewm(com=2, adjust=False).mean() 
     d_series = k_series.ewm(com=2, adjust=False).mean()
-    kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
-    if kv < 60.0 or kv <= dv: return None
     
-    # 2. MACD
+    kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
+    kv_prev = float(k_series.iloc[-2]) if len(k_series) >= 2 else kv
+    if kv < 60.0 or kv <= dv: return None
+    kd_trend = "↗️" if kv >= kv_prev else "↘️"
+    
     ema12 = c_ser.ewm(span=12, adjust=False).mean()
     ema26 = c_ser.ewm(span=26, adjust=False).mean()
     macd_diff_series = ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()
@@ -362,13 +356,17 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     macd_diff_prev = float(macd_diff_series.iloc[-2]) if len(macd_diff_series) >= 2 else 0.0
     if macd_diff <= 0: return None
     
-    # 5. VR
+    # 📈 計算 26小時 VR 趨勢
     chg = c_ser.diff()
-    su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
-    sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
-    sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
-    vr26 = ((su + 0.5 * sf) / (1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf))) * 100
+    su_series = v_ser.where(chg > 0, 0).rolling(26).sum()
+    sd_series = v_ser.where(chg < 0, 0).rolling(26).sum()
+    sf_series = v_ser.where(chg == 0, 0).rolling(26).sum()
+    
+    vr_series = ((su_series + 0.5 * sf_series) / (sd_series.replace(0, 1) + 0.5 * sf_series)) * 100
+    vr26 = float(vr_series.iloc[-1])
+    vr26_prev = float(vr_series.iloc[-2]) if len(vr_series) >= 2 else vr26
     if vr26 < 100.0: return None
+    vr_trend = "↗️" if vr26 >= vr26_prev else "↘️"
     
     # ==========================================
     # 🧮 100分精密評分大腦
@@ -407,7 +405,8 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         "60分K值": round(kv, 1), "60分D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
         "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
-        "今日漲幅": day_res["今日漲幅"], "距離上軌": dist_to_bb_upper_str
+        "今日漲幅": day_res["今日漲幅"], "距離上軌": final_res["距離上軌"] if 'final_res' in locals() else dist_to_bb_upper_str,
+        "KD趨勢": f"K{round(kv,1)}/D{round(dv,1)} {kd_trend}", "VR趨勢": f"{round(vr26,1)}% {vr_trend}"
     }
 
 def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
@@ -445,7 +444,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v3.3 終極穩定版】...")
+    print("🚀 啟動【台股 666 精選雷達 v3.4 趨勢大腦版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -485,7 +484,7 @@ if __name__ == "__main__":
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
     
-    print(f"📦 雷達燃料充足，目前準備掃描全台股核心標的，共計 {total_count} 個代碼...")
+    print(f"📦 雷達準備完畢，即將掃描全市場代碼共 {total_count} 個...")
     
     chunk_size = 30  
     chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, total_count, chunk_size)]
@@ -516,21 +515,13 @@ if __name__ == "__main__":
                     
                     if time_diff_mins < 40.0 and abs(current_now_p - cached_p) < 0.01:
                         if int(c_data["is_match"]) == 1:
-                            # 補足歷史名稱修正
                             sname_display = stock_map[ticker]["sname"]
-                            if sname_display.startswith("台股") or sname_display.startswith("櫃買"):
-                                try:
-                                    info = yf.Ticker(ticker).info
-                                    sname_display = info.get('shortName', sname_display)
-                                except: pass
                             results.append({
                                 "代碼": sid, "名稱": sname_display, "現價": round(cached_p, 2), 
-                                "60MA位置": round(float(c_data["ma60"]), 2), "布林上軌": round(float(c_data["bb_upper"]), 2), 
-                                "60分K值": round(float(c_data["kv"]), 1), "60分D值": round(float(c_data["dv"]), 1),
-                                "MACD柱": round(float(c_data["macd_diff"]), 3), "小時量比": str(c_data["vol_str"]), 
-                                "VR值": str(c_data["vr_str"]), "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
+                                "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
                                 "道氏形態": str(day_passed_pool[ticker]["道氏形態"]), "防守價": round(float(day_passed_pool[ticker]["防守價"]), 2), "預估風險": str(day_passed_pool[ticker]["預估風險"]),
-                                "今日漲幅": str(day_passed_pool[ticker]["今日漲幅"]), "距離上軌": str(c_data.get("dist_to_bb_str", "計算中"))
+                                "今日漲幅": str(day_passed_pool[ticker]["今日漲幅"]), "距離上軌": str(c_data.get("dist_to_bb_str", "計算中")),
+                                "KD趨勢": str(c_data.get("kd_trend_str", "N/A")), "VR趨勢": str(c_data.get("vr_trend_str", "N/A")), "小時量比": str(c_data["vol_str"])
                             })
                         new_cache_rows.append(c_data)
                         continue
@@ -562,32 +553,25 @@ if __name__ == "__main__":
                         
                         final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info["is_hot"], market_today_pct)
                         
-                        cache_info = {
-                            "ticker": sid, "timestamp": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                            "現價": float(day_passed_pool[ticker]["現價"]), "is_match": 1 if final_res else 0,
-                            "ma60": final_res["60MA位置"] if final_res else 0.0, "bb_upper": final_res["布林上軌"] if final_res else 0.0,
-                            "kv": final_res["60分K值"] if final_res else 0.0, "dv": final_res["60分D值"] if final_res else 0.0,
-                            "macd_diff": final_res["MACD柱"] if final_res else 0.0, "vol_str": final_res["小時量比"] if final_res else "",
-                            "vr_str": final_res["VR值"] if final_res else "", "score": final_res["score"] if final_res else 0.0,
-                            "vol_mult": final_res["小時量比數字"] if final_res else 0.0, "dist_to_bb_str": final_res["距離上軌"] if final_res else ""
-                        }
-                        new_cache_rows.append(cache_info)
-
                         if final_res:
+                            cache_info = {
+                                "ticker": sid, "timestamp": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                                "現價": float(day_passed_pool[ticker]["現價"]), "is_match": 1,
+                                "ma60": final_res["60MA位置"], "bb_upper": final_res["布林上軌"],
+                                "kv": final_res["60分K值"], "dv": final_res["60分D值"], "macd_diff": final_res["MACD柱"],
+                                "vol_str": final_res["小時量比"], "vr_str": final_res["VR值"], "score": final_res["score"],
+                                "vol_mult": final_res["小時量比數字"], "dist_to_bb_str": final_res["距離上軌"],
+                                "kd_trend_str": final_res["KD趨勢"], "vr_trend_str": final_res["VR趨勢"]
+                            }
+                            new_cache_rows.append(cache_info)
+
                             sname_display = stock_map[ticker]["sname"]
-                            if sname_display.startswith("台股") or sname_display.startswith("櫃買"):
-                                try:
-                                    info = yf.Ticker(ticker).info
-                                    sname_display = info.get('shortName', sname_display)
-                                except: pass
                             results.append({
                                 "代碼": sid, "名稱": sname_display, "現價": round(final_res["現價"], 2), 
-                                "60MA位置": round(final_res["60MA位置"], 2), "布林上軌": round(final_res["布林上軌"], 2), 
-                                "60分K值": round(final_res["60分K值"], 1), "60分D值": round(final_res["60分D值"], 1),
-                                "MACD柱": round(final_res["MACD柱"], 3), "小時量比": final_res["小時量比"], 
-                                "VR值": final_res["VR值"], "score": final_res["score"], "量比數字": final_res["小時量比數字"],
+                                "score": final_res["score"], "量比數字": final_res["小時量比數字"],
                                 "道氏形態": final_res["道氏形態"], "防守價": round(final_res["防守價"], 2), "預估風險": final_res["預估風險"],
-                                "今日漲幅": final_res["今日漲幅"], "距離上軌": final_res["距離上軌"]
+                                "今日漲幅": final_res["今日漲幅"], "距離上軌": final_res["距離上軌"],
+                                "KD趨勢": final_res["KD趨勢"], "VR趨勢": final_res["VR趨勢"], "小時量比": final_res["小時量比"]
                             })
                     except:
                         continue
@@ -621,20 +605,23 @@ if __name__ == "__main__":
             total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
             if total_seen >= 2: tag = f"🔥【連霸 {total_seen} 輪】"
                 
+            # ⭐ 前五核心特攻（包含趨勢箭頭顯示）
             if len(top_list) < 5:
                 top_list.append(
                     f"⭐ <b>{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> {tag}\n"
                     f" ➔ 板塊: {sector_name} ({sector_info['desc']})\n"
                     f" ➔ 價格: <b>{row['現價']}</b> (今日漲幅: <b>{row['今日漲幅']}</b>)\n"
-                    f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR值']}</b>\n"
+                    f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
+                    f" ➔ 指標: KD <b>{row['KD趨勢']}</b>\n"
                     f" ➔ 空間: 距上軌 <b>{row['距離上軌']}</b>\n"
                     f" ➔ 戰術: 守 <b>{row['防守價']}</b> (距停損: <b>{row['預估風險']}</b>)\n"
                 )
+            # 🚨 標準續報名單（同樣精煉補上指標趨勢）
             else:
                 status_hot_tag = "🔥" if sector_info["is_hot"] else "❄️"
                 standard_list.append(
                     f"🚨 <b>【標準666】{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> {status_hot_tag}\n"
-                    f" ➔ 價: {row['現價']} ({row['今日漲幅']}) | 量比: {row['小時量比']} | 距上軌: {row['距離上軌']} | 守: {row['防守價']} ({row['預估風險']})"
+                    f" ➔ 價: {row['現價']} ({row['今日漲幅']}) | 量比: {row['小時量比']} | VR: {row['VR趨勢']} | KD: {row['KD趨勢']} | 距上軌: {row['距離上軌']} | 守: {row['防守價']} ({row['預估風險']})"
                 )
         
         if top_list: send_tg_msg(header_msg + "\n".join(top_list))
