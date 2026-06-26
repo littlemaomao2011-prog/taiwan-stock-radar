@@ -198,4 +198,386 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
         
     d_close = df_d["Close"].squeeze().astype(float)
     d_high = df_d["High"].squeeze().astype(float)
-    d_low = df_d
+    d_low = df_d["Low"].squeeze().astype(float)
+    d_open = df_d["Open"].squeeze().astype(float)
+    d_vol = df_d["Volume"].squeeze().astype(float)
+    
+    current_now_price = round(float(d_close.iloc[-1]), 2)
+    if is_after_market and len(d_close) >= 2:
+        yesterday_close = d_close.iloc[-2]
+        today_pct = ((current_now_price - yesterday_close) / yesterday_close) * 100
+    else:
+        today_open = d_open.iloc[-1]
+        today_pct = ((current_now_price - today_open) / today_open) * 100
+        
+    if today_pct > 8.5: return None
+    ma5_d = d_close.tail(5).mean()
+    bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100
+    if bias_5ma > 8.0: return None
+    
+    recent_lows = d_low.tail(20)
+    recent_highs = d_high.tail(20)
+    prior_low = recent_lows.head(15).min()   
+    current_low = recent_lows.tail(5).min()   
+    prior_high_zone = recent_highs.head(15)
+    prior_high = prior_high_zone.max()  
+    prior_high_idx = prior_high_zone.idxmax()
+    
+    if current_low < prior_low: return None            
+    if current_now_price < (prior_high * 0.96): return None
+    
+    if current_now_price >= prior_high:
+        try:
+            prior_high_loc = d_vol.index.get_loc(prior_high_idx)
+            start_loc = max(0, prior_high_loc - 1)
+            end_loc = min(len(d_vol) - 1, prior_high_loc + 1)
+            if (end_loc - start_loc + 1) < 3 and len(d_vol) >= 3:
+                if start_loc == 0: end_loc = 2
+                else: start_loc = len(d_vol) - 3
+            prior_high_3d_avg_vol = d_vol.iloc[start_loc:end_loc + 1].mean()
+        except:
+            prior_high_3d_avg_vol = d_vol.loc[prior_high_idx] 
+            
+        today_total_vol = d_vol.iloc[-1]
+        if is_after_market:
+            if today_total_vol < prior_high_3d_avg_vol: return None
+        else:
+            if 9 <= current_hour <= 13:
+                passed_mins = (current_hour - 9) * 60 + current_minute
+                passed_mins = min(270.0, max(1.0, float(passed_mins)))
+                if passed_mins <= 45:
+                    estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                    if estimated_today_vol < (prior_high_3d_avg_vol * 0.4): return None
+                else:
+                    estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                    if estimated_today_vol < prior_high_3d_avg_vol: return None  
+
+    prev_close = d_close.shift(1)
+    tr1 = d_high - d_low
+    tr2 = (d_high - prev_close).abs()
+    tr3 = (d_low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr_series = tr.rolling(ATR_PERIOD).mean()
+    current_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
+
+    base_pivot_low = None
+    for i in range(len(d_low) - 3, 1, -1):
+        if (d_low.iloc[i] < d_low.iloc[i-1] and d_low.iloc[i] < d_low.iloc[i-2] and
+            d_low.iloc[i] < d_low.iloc[i+1] and d_low.iloc[i] < d_low.iloc[i+2]):
+            base_pivot_low = float(d_low.iloc[i])
+            break
+    if base_pivot_low is None or base_pivot_low > current_now_price:
+        base_pivot_low = float(min(prior_low, current_low))
+
+    stop_loss_price = round(base_pivot_low - (ATR_MULTIPLIER * current_atr), 2)
+    if stop_loss_price <= 0 or stop_loss_price > current_now_price:
+        stop_loss_price = round(base_pivot_low * 0.95, 2)
+
+    risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
+    dow_status = "↗️ 道氏真量突破" if current_now_price >= prior_high else "🔄 道氏底底高蓄勢"
+    
+    return {
+        "現價": current_now_price, "道氏形態": dow_status,
+        "防守價": stop_loss_price, "預估風險": f"{risk_pct}%"
+    }
+
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market):
+    required_cols = ["High", "Low", "Close", "Volume", "Open"]
+    if not all(col in df_60m.columns for col in required_cols): return None
+    df_60m = df_60m.bfill().ffill()
+    if is_after_market and df_60m["Volume"].iloc[-1] == 0 and len(df_60m) >= 2:
+        df_60m = df_60m.iloc[:-1]
+    if len(df_60m) < 40: return None
+    
+    c_ser = df_60m["Close"].squeeze().astype(float)
+    h_ser = df_60m["High"].squeeze().astype(float)
+    l_ser = df_60m["Low"].squeeze().astype(float)
+    v_ser = df_60m["Volume"].squeeze().astype(float)
+    c_p, v_p = float(c_ser.iloc[-1]), float(v_ser.iloc[-1])
+    
+    ma60 = c_ser.rolling(60).mean().iloc[-1]
+    if pd.isna(ma60) or c_p < ma60: return None
+    
+    ma20 = c_ser.rolling(20).mean()
+    std20 = c_ser.rolling(20).std()
+    bb_middle = float(ma20.iloc[-1])
+    if c_p < bb_middle: return None
+    bb_upper = float((ma20 + 2 * std20).iloc[-1])
+    
+    v_mean_20h = v_ser.tail(21).head(20).mean()
+    if not is_after_market and (9 <= current_hour <= 13):
+        passed_mins = max(1, current_minute)
+        time_multiplier = 60.0 / passed_mins
+        estimated_hour_vol = v_p * time_multiplier
+        vol_mult = round(estimated_hour_vol / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
+        threshold = 0.4 if current_minute <= 45 and current_hour == 9 else 0.8
+        if vol_mult < threshold: return None
+    else:
+        vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
+
+    low_min = l_ser.rolling(60).min()
+    high_max = h_ser.rolling(60).max()
+    rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
+    k_series = rsv.ewm(com=2, adjust=False).mean() 
+    d_series = k_series.ewm(com=2, adjust=False).mean()
+    kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
+    if kv < 60.0 or kv <= dv: return None
+    
+    ema12 = c_ser.ewm(span=12, adjust=False).mean()
+    ema26 = c_ser.ewm(span=26, adjust=False).mean()
+    macd_diff = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
+    if macd_diff <= 0: return None
+    
+    chg = c_ser.diff()
+    su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
+    sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
+    sf = v_ser.where(chg == 0, 0).rolling(26).sum().iloc[-1]
+    vr26 = ((su + 0.5 * sf) / (1 if (sd + 0.5 * sf) == 0 else (sd + 0.5 * sf))) * 100
+    if vr26 < 100.0: return None
+    
+    score = vol_mult * 10 + (50 if 150.0 <= vr26 <= 400.0 else -30)
+    
+    return {
+        "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
+        "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍(動態預估)" if not is_after_market else f"{vol_mult}倍",
+        "60分K值": round(kv, 1), "60分D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
+        "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
+        "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"]
+    }
+
+def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
+    passed_day_stocks = {}
+    try:
+        data_d = yf.download(chunk, period="60d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
+        data_w = yf.download(chunk, period="26wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True)
+    except:
+        return passed_day_stocks
+
+    for ticker in chunk:
+        try:
+            if isinstance(data_w.columns, pd.MultiIndex):
+                if ticker not in data_w.columns.get_level_values(0): continue
+                df_stock_w = data_w[ticker].dropna(subset=["Close"])
+            else:
+                df_stock_w = data_w.dropna(subset=["Close"])
+                
+            if not stage0_weekly_filter(df_stock_w): continue  
+            
+            if isinstance(data_d.columns, pd.MultiIndex):
+                if ticker not in data_d.columns.get_level_values(0): continue
+                df_stock_d = data_d[ticker].dropna(subset=["Close"])
+            else:
+                df_stock_d = data_d.dropna(subset=["Close"])
+                
+            if df_stock_d.empty: continue
+            df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
+            
+            day_res = stage1_day_filter(df_stock_d, current_hour, current_minute, is_after_market)
+            if day_res:
+                passed_day_stocks[ticker] = day_res
+        except:
+            continue
+    return passed_day_stocks
+
+if __name__ == "__main__":
+    print("🚀 啟動【台股 666 精選雷達 v3.0 完美編譯穩定版】...")
+    tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
+    now_dt = datetime.datetime.now(tz_taiwan)
+    now = now_dt.strftime("%Y-%m-%d %H:%M")
+    current_hour, current_minute = now_dt.hour, now_dt.minute
+    
+    is_after_market = False
+    if current_hour >= 14 or (now_dt.weekday() >= 5):
+        is_after_market = True
+        print("🌙 自動切換至【精準盤後做功課模式】...")
+    else:
+        print("☀️ 自動開啟【即時極速獵殺模式】...")
+
+    if current_hour == 9 and current_minute <= 10:
+        if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
+        if os.path.exists(MEMORY_FILE): os.remove(MEMORY_FILE)
+
+    filter_status, filter_msg = check_market_filter_and_holiday()
+    if filter_status == "LOCK":
+        send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
+        exit(0)
+        
+    sector_heat_map = get_sector_heat_status()
+
+    cache_dict = {}
+    if os.path.exists(CACHE_FILE):
+        try:
+            df_cache = pd.read_csv(CACHE_FILE, dtype={"ticker": str})
+            for _, row in df_cache.iterrows():
+                cache_dict[str(row["ticker"])] = row.to_dict()
+        except:
+            pass
+
+    if os.path.exists(MEMORY_FILE):
+        try: df_mem = pd.read_csv(MEMORY_FILE, dtype={"stock_id": str})
+        except: df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
+    else:
+        df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
+
+    stock_map = get_all_taiwan_stocks_official()
+    all_yf_codes = list(stock_map.keys())
+    total_count = len(all_yf_codes)
+    
+    chunk_size = 40  
+    chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, total_count, chunk_size)]
+    
+    day_passed_pool = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(download_all_timeframes_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
+        for future in as_completed(futures):
+            chunk_res = future.result()
+            if chunk_res: day_passed_pool.update(chunk_res)
+                
+    results = []
+    new_cache_rows = []
+    
+    if day_passed_pool:
+        passed_tickers = list(day_passed_pool.keys())
+        uncached_tickers = []
+        
+        for ticker in passed_tickers:
+            sid = str(stock_map[ticker]["sid"])
+            if sid in cache_dict:
+                try:
+                    c_data = cache_dict[sid]
+                    last_time = datetime.datetime.strptime(str(c_data["timestamp"]), "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz_taiwan)
+                    time_diff_mins = (now_dt - last_time).total_seconds() / 60.0
+                    current_now_p = float(day_passed_pool[ticker]["現價"])
+                    cached_p = float(c_data["現價"])
+                    
+                    if time_diff_mins < 40.0 and abs(current_now_p - cached_p) < 0.01:
+                        if int(c_data["is_match"]) == 1:
+                            results.append({
+                                "代碼": sid, "名稱": stock_map[ticker]["sname"], "現價": round(cached_p, 2), 
+                                "60MA位置": round(float(c_data["ma60"]), 2), "布林上軌": round(float(c_data["bb_upper"]), 2), 
+                                "60分K值": round(float(c_data["kv"]), 1), "60分D值": round(float(c_data["dv"]), 1),
+                                "MACD柱": round(float(c_data["macd_diff"]), 3), "小時量比": str(c_data["vol_str"]), 
+                                "VR值": str(c_data["vr_str"]), "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
+                                "道氏形態": str(day_passed_pool[ticker]["道氏形態"]), "防守價": round(float(day_passed_pool[ticker]["防守價"]), 2), "預估風險": str(day_passed_pool[ticker]["預估風險"])
+                            })
+                        new_cache_rows.append(c_data)
+                        continue
+                except:
+                    pass
+            uncached_tickers.append(ticker)
+
+        if uncached_tickers:
+            passed_chunks = [uncached_tickers[i:i + 20] for i in range(0, len(uncached_tickers), 20)]
+            for p_chunk in passed_chunks:
+                try:
+                    data_60m = yf.download(p_chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
+                except:
+                    continue
+                    
+                for ticker in p_chunk:
+                    try:
+                        if isinstance(data_60m.columns, pd.MultiIndex):
+                            if ticker not in data_60m.columns.get_level_values(0): continue
+                            df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
+                        else:
+                            df_stock_60m = data_60m.dropna(subset=["Close"])
+                        if df_stock_60m.empty: continue
+                        df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
+                        
+                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market)
+                        sid = str(stock_map[ticker]["sid"])
+                        
+                        cache_info = {
+                            "ticker": sid, "timestamp": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
+                            "現價": float(day_passed_pool[ticker]["現價"]), "is_match": 1 if final_res else 0,
+                            "ma60": final_res["60MA位置"] if final_res else 0.0, "bb_upper": final_res["布林上軌"] if final_res else 0.0,
+                            "kv": final_res["60分K值"] if final_res else 0.0, "dv": final_res["60分D值"] if final_res else 0.0,
+                            "macd_diff": final_res["MACD柱"] if final_res else 0.0, "vol_str": final_res["小時量比"] if final_res else "",
+                            "vr_str": final_res["VR值"] if final_res else "", "score": final_res["score"] if final_res else 0.0,
+                            "vol_mult": final_res["小時量比數字"] if final_res else 0.0
+                        }
+                        new_cache_rows.append(cache_info)
+
+                        if final_res:
+                            results.append({
+                                "代碼": sid, "名稱": stock_map[ticker]["sname"], "現價": round(final_res["現價"], 2), 
+                                "60MA位置": round(final_res["60MA位置"], 2), "布林上軌": round(final_res["布林上軌"], 2), 
+                                "60分K值": round(final_res["60分K值"], 1), "60分D值": round(final_res["60分D值"], 1),
+                                "MACD柱": round(final_res["MACD柱"], 3), "小時量比": final_res["小時量比"], 
+                                "VR值": final_res["VR值"], "score": final_res["score"], "量比數字": final_res["小時量比數字"],
+                                "道氏形態": final_res["道氏形態"], "防守價": round(final_res["防守價"], 2), "預估風險": final_res["預估風險"]
+                            })
+                    except:
+                        continue
+                        
+        if new_cache_rows: pd.DataFrame(new_cache_rows).to_csv(CACHE_FILE, index=False)
+                    
+    mode_title = "⚖️ 終極盤後選股" if is_after_market else "⚡ 盤中動態特攻"
+    header_msg = f"🔔 <b>【台股 666 {mode_title}戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
+
+    if results:
+        df_report = pd.DataFrame(results).sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
+        this_run_sids = set(df_report["代碼"].astype(str))
+        last_run_sids = set(df_mem[df_mem["last_run"] == 1]["stock_id"].astype(str))
+        
+        df_mem["last_run"] = 0
+        for sid in this_run_sids:
+            if sid in df_mem["stock_id"].values:
+                df_mem.loc[df_mem["stock_id"] == sid, "total_count"] += 1
+                df_mem.loc[df_mem["stock_id"] == sid, "last_run"] = 1
+            else:
+                new_row = pd.DataFrame([{"stock_id": sid, "last_run": 1, "total_count": 1}])
+                df_mem = pd.concat([df_mem, new_row], ignore_index=True)
+        
+        valid_counts = df_mem[df_mem["total_count"] >= 2]["total_count"].values
+        top_threshold = np.sort(valid_counts)[-3] if len(valid_counts) >= 3 else (np.min(valid_counts) if len(valid_counts) > 0 else 999)
+        
+        top_list = []
+        standard_list = []
+        
+        for idx, row in df_report.iterrows():
+            sid_str = str(row['代碼'])
+            sector_name = get_stock_sector_name(sid_str)
+            sector_info = sector_heat_map.get(sector_name, {"is_hot": True, "desc": "✨ 友善放行"})
+            
+            if len(top_list) < 5 and sector_info["is_hot"]:
+                tag = ""
+                mem_row = df_mem[df_mem["stock_id"] == sid_str]
+                total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
+                if total_seen >= 2 and total_seen >= top_threshold: tag = f" 🔥【連霸 {total_seen} 輪】"
+                elif sid_str not in last_run_sids and len(last_run_sids) > 0: tag = " 🆕【全新進榜】"
+                elif len(last_run_sids) == 0: tag = " 🚀【雷達初次偵測】"
+                    
+                top_list.append(
+                    f"🔥 <b>【核心特攻】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
+                    f" 🎯 歸屬板塊: <b>{sector_name} ({sector_info['desc']})</b>\n"
+                    f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 {WEEKLY_MA_PERIOD}MA 保護)</b>\n"
+                    f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
+                    f" ⚡ 當量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
+                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']}\n"
+                    f" 🎯 <b>鐵血防守點: {row['防守價']} (0.5ATR潛在跌幅: {row['預估風險']})</b>\n"
+                )
+            else:
+                status_hot_tag = "🔥主流" if sector_info["is_hot"] else "❄️非主流"
+                standard_list.append(
+                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']}</b> ({status_hot_tag})\n"
+                    f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | 防守: {row['防守價']} ({row['預估風險']})"
+                )
+        
+        if top_list: send_tg_msg(header_msg + "\n".join(top_list))
+        
+        temp_list = []
+        for item in standard_list:
+            temp_list.append(item)
+            if len(temp_list) == 15:
+                send_tg_msg(f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(temp_list))
+                temp_list = []
+                time.sleep(0.5)
+        if temp_list:
+            send_tg_msg(f"📦 <b>【標準 666 續報尾包】</b>\n------------------------\n" + "\n".join(temp_list))
+            
+        df_mem.to_csv(MEMORY_FILE, index=False)
+    else:
+        if not os.path.exists(MEMORY_FILE):
+            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(MEMORY_FILE, index=False)
+        send_tg_msg(header_msg + "❌ 目前市場無符合「週K大趨勢保護、底底高、3日平滑真突破且爆量、且技術面完美」之標的。")
