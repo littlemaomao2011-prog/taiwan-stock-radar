@@ -32,8 +32,10 @@ MEMORY_FILE = "stock_memory.csv"    # 連霸記憶庫
 MARKET_MA_PERIOD = 20        # 大盤風控均線天數 (預設 20MA 月線)
 MARKET_DROP_THRESHOLD = 0.0  # 跌破均線幾 % 啟動鐵血空倉令
 
-# 個股長線保護閥值
+# 個股長線保護與 ATR 閥值
 WEEKLY_MA_PERIOD = 20        # 週 K 線趨勢保護天數 (預設週 20MA)
+ATR_PERIOD = 14              # ATR 計算標準天數
+ATR_MULTIPLIER = 0.5         # Pivot Low 往下減的 ATR 倍數 (第八個問題：0.5 ATR)
 
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -46,7 +48,7 @@ def send_tg_msg(msg):
 # 0. 大盤風控與環境結構驗證
 # ==========================================
 def check_market_filter_and_holiday():
-    print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA, 鎖倉閥值: {MARKET_DROP_THRESHOLD}%)...")
+    print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA)...")
     try:
         market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
         if not market_data_d.empty:
@@ -123,7 +125,7 @@ def stage0_weekly_filter(df_w):
     return True
 
 # ==========================================
-# 2. 法人級漏斗：第一階段「日K與成交量極速海選與 Swing Low 計算」
+# 2. 法人級漏斗：第一階段「日K與成交量極速海選與 ATR-Pivot 止損」
 # ==========================================
 def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
@@ -133,7 +135,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     if is_after_market and df_d["Volume"].iloc[-1] == 0 and len(df_d) >= 2:
         df_d = df_d.iloc[:-1]
 
-    if len(df_d) < 20: return None
+    if len(df_d) < 25: return None
         
     historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
     if len(historical_vols) < 5 or historical_vols.mean() < 500000: return None
@@ -144,7 +146,6 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     d_open = df_d["Open"].squeeze().astype(float)
     d_vol = df_d["Volume"].squeeze().astype(float)
     
-    # 精準四捨五入現價，擺脫浮點數雜訊
     current_now_price = round(float(d_close.iloc[-1]), 2)
     
     if is_after_market and len(d_close) >= 2:
@@ -207,19 +208,34 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
                     if estimated_today_vol < prior_high_3d_avg_vol: return None  
 
     # ------------------------------------------------------------
-    # 💎 真正的 Swing Low / Pivot Low 尋找機制
+    # 📊 第八個問題優化：【ATR 波動度調校：Pivot Low - 0.5*ATR 防守機制】
     # ------------------------------------------------------------
-    stop_loss_price = None
-    # 從倒數第 3 天往回尋找第一個符合左右各 2 天窗格的 Pivot Low
+    # 1. 計算標準 ATR (Average True Range)
+    prev_close = d_close.shift(1)
+    tr1 = d_high - d_low
+    tr2 = (d_high - prev_close).abs()
+    tr3 = (d_low - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr_series = tr.rolling(ATR_PERIOD).mean()
+    current_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
+
+    # 2. 尋找基礎波段轉折 Pivot Low
+    base_pivot_low = None
     for i in range(len(d_low) - 3, 1, -1):
         if (d_low.iloc[i] < d_low.iloc[i-1] and d_low.iloc[i] < d_low.iloc[i-2] and
             d_low.iloc[i] < d_low.iloc[i+1] and d_low.iloc[i] < d_low.iloc[i+2]):
-            stop_loss_price = round(float(d_low.iloc[i]), 2)
+            base_pivot_low = float(d_low.iloc[i])
             break
             
-    # 如果前 20 天內完全沒遇到嚴格的 Pivot Low 拐點，則退回底底高結構低點防禦
-    if stop_loss_price is None or stop_loss_price > current_now_price:
-        stop_loss_price = round(min(prior_low, current_low), 2)
+    if base_pivot_low is None or base_pivot_low > current_now_price:
+        base_pivot_low = float(min(prior_low, current_low))
+
+    # 3. 引進動能防震：停損價 = Pivot Low - 0.5 * ATR
+    stop_loss_price = round(base_pivot_low - (ATR_MULTIPLIER * current_atr), 2)
+    
+    # 安全兜底：防守價如果不小心扣到變負數或太誇張，強制守住基礎低點的 90%
+    if stop_loss_price <= 0 or stop_loss_price > current_now_price:
+        stop_loss_price = round(base_pivot_low * 0.95, 2)
 
     risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
     dow_status = "↗️ 道氏真量突破" if current_now_price >= prior_high else "🔄 道氏底底高蓄勢"
@@ -274,7 +290,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
     k_series = rsv.ewm(com=2, adjust=False).mean() 
-    d_series = k_series.ewm(com=2, adjust=False).mean()
+    d_series = d_series = k_series.ewm(com=2, adjust=False).mean()
     kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     if kv < 60.0 or kv <= dv: return None
     
@@ -306,7 +322,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
 def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
     passed_day_stocks = {}
     try:
-        data_d = yf.download(chunk, period="45d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
+        data_d = yf.download(chunk, period="60d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
         data_w = yf.download(chunk, period="26wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True)
     except:
         return passed_day_stocks
@@ -330,7 +346,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v2.6 正式 Pivot 防守版】...")
+    print("🚀 啟動【台股 666 精選雷達 v2.7 ATR波動防禦版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -504,11 +520,11 @@ if __name__ == "__main__":
                     
                 top_list.append(
                     f"🔥 <b>【核心特攻】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
-                    f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 {WEEKLY_MA_PERIOD}MA 保護機制)</b>\n"
+                    f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 {WEEKLY_MA_PERIOD}MA 保護)</b>\n"
                     f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
                     f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
-                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\\n"
-                    f" 🎯 <b>鐵血防守點: {row['防守價']} (預估風險潛在跌幅: {row['預估風險']})</b>\n"
+                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
+                    f" 🎯 <b>鐵血動態防守點: {row['防守價']} (Pivot - 0.5ATR，預估風險潛在跌幅: {row['預估風險']})</b>\n"
                 )
         
         if top_list: send_tg_msg(header_msg + "\n".join(top_list))
@@ -532,4 +548,4 @@ if __name__ == "__main__":
     else:
         if not os.path.exists(MEMORY_FILE):
             pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(MEMORY_FILE, index=False)
-        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「週K大趨勢保護、底底高、3日平滑真突破且爆量」之標的。")
+        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「週K大趨勢保護、底底高、3日平滑真突破且爆量、符合ATR安全邊際」之標的。")
