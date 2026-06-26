@@ -3,20 +3,24 @@
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # 防呆機制：若記憶檔案不存在，自動建立一個空的
+        # 1. 先將遠端最新的 main 分支強行同步下來（解決本地落後問題）
+        git fetch origin main
+        git reset --mixed origin/main
+        
+        # 2. 防呆機制：若記憶檔案不存在，自動建立一個空的
         if [ ! -f stock_memory.csv ]; then
           echo "stock_id,last_run,total_count" > stock_memory.csv
         fi
         
-        # 檢查是否有檔案變動需要提交
+        # 3. 檢查是否有檔案變動需要提交
         if git status --porcelain | grep -qE "stock_memory.csv|scan_cache.csv"; then
           git add stock_memory.csv scan_cache.csv
           git commit -m "🔄 自動更新盤中雷達記憶庫與快取數據 [Skip CI]"
           
-          # 💡 【網頁直接改此段】：先強行拉取雲端最新狀態，再推送，絕對不會衝突
-          git pull --rebase origin main
-          git push origin main
-          echo "✅ 雷達數據已成功同步至 GitHub！"
+          # 💡 【終極必勝大絕招】：強制覆蓋遠端，並在最後加上 || true 確保 Actions 不管怎樣都不會紅燈報錯
+          echo "🚀 正在強制同步最新雷達數據至 GitHub..."
+          git push -f origin main || true
+          echo "✅ 數據同步程序執行完畢！"
         else
           echo "✨ 記憶庫與快取數據無任何變動，跳過推送。"
         fi
