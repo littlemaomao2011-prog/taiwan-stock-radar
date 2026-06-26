@@ -89,4 +89,93 @@ def get_all_taiwan_stocks_official():
     ]
     try:
         for url, m_type in urls:
-            res = requests.get(url, headers=headers, timeout=
+            res = requests.get(url, headers=headers, timeout=8)
+            res.encoding = 'big5'
+            df = pd.read_html(res.text)[0]
+            for index, row in df.iterrows():
+                cell_text = str(row.iloc[0]).strip()
+                match = re.match(r'^(\d{4})\s+(.+)$', cell_text)
+                if match:
+                    sid = match.group(1)
+                    sname = match.group(2).strip()
+                    if "特" in sname or "甲" in sname or "乙" in sname: continue
+                    stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
+    except Exception as e:
+        print(f"⚠️ 官方網頁連線受阻，啟動備援名單")
+    if len(stock_dict) == 0:
+        for sid, sname, m_type in [("6141","柏承","TWO"), ("6901","鑽石投資","TW"), ("8071","能率網通","TWO")]:
+            stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
+    return stock_dict
+
+# ==========================================
+# 1.5 週 K 線大趨勢保護層 (長線保護短線)
+# ==========================================
+def stage0_weekly_filter(df_w):
+    if df_w.empty or len(df_w) < WEEKLY_MA_PERIOD: return False
+    df_w = df_w.bfill().ffill()
+    w_close = df_w["Close"].squeeze().astype(float)
+    
+    current_price = w_close.iloc[-1]
+    weekly_ma = w_close.rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
+    
+    if pd.isna(weekly_ma) or current_price < weekly_ma:
+        return False
+    return True
+
+# ==========================================
+# 2. 法人級漏斗：第一階段「日K與成交量極速海選」
+# ==========================================
+def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
+    required_cols = ["High", "Low", "Close", "Volume", "Open"]
+    if not all(col in df_d.columns for col in required_cols): return None
+    
+    df_d = df_d.bfill().ffill()
+    if is_after_market and df_d["Volume"].iloc[-1] == 0 and len(df_d) >= 2:
+        df_d = df_d.iloc[:-1]
+
+    if len(df_d) < 20: return None
+        
+    historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
+    if len(historical_vols) < 5 or historical_vols.mean() < 500000: return None
+        
+    d_close = df_d["Close"].squeeze().astype(float)
+    d_high = df_d["High"].squeeze().astype(float)
+    d_low = df_d["Low"].squeeze().astype(float)
+    d_open = df_d["Open"].squeeze().astype(float)
+    d_vol = df_d["Volume"].squeeze().astype(float)
+    
+    current_now_price = d_close.iloc[-1]
+    
+    if is_after_market and len(d_close) >= 2:
+        yesterday_close = d_close.iloc[-2]
+        today_pct = ((current_now_price - yesterday_close) / yesterday_close) * 100
+    else:
+        today_open = d_open.iloc[-1]
+        today_pct = ((current_now_price - today_open) / today_open) * 100
+        
+    if today_pct > 8.5: return None
+    
+    ma5_d = d_close.tail(5).mean()
+    bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100
+    if bias_5ma > 8.0: return None
+    
+    recent_lows = d_low.tail(20)
+    recent_highs = d_high.tail(20)
+    
+    prior_low = recent_lows.head(15).min()   
+    current_low = recent_lows.tail(5).min()   
+    
+    prior_high_zone = recent_highs.head(15)
+    prior_high = prior_high_zone.max()  
+    prior_high_idx = prior_high_zone.idxmax()
+    
+    if current_low < prior_low: return None            
+    if current_now_price < (prior_high * 0.96): return None
+    
+    # ------------------------------------------------------------
+    # 🎯 核心優化：前高 3 日平均量防禦機制
+    # ------------------------------------------------------------
+    if current_now_price >= prior_high:
+        try:
+            prior_high_loc = d_vol.index.get_loc(prior_high_idx)
+            start_loc = max(0, prior_high_loc - 1
