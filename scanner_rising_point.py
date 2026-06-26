@@ -23,7 +23,7 @@ pd.set_option('display.width', 1000)
 # ⚠️ 請記得在這裡修改成您自己正確的 Telegram 金鑰與 ID
 TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
 TELEGRAM_CHAT_ID = "5220963669"
-CACHE_FILE = "scan_cache.csv"  # 🧠 歷史快取記憶庫
+CACHE_FILE = "scan_cache.csv"  # 🧠 快取資料庫
 
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -107,7 +107,6 @@ def stage1_day_filter(df_d, current_hour, is_after_market):
 
     if len(df_d) < 20: return None
         
-    # 【Step 4】5日均量風控：嚴格把關 500 張 (500000股) 流動性
     recent_5d_vol = df_d["Volume"].dropna().tail(5)
     if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 500000: return None
         
@@ -119,7 +118,6 @@ def stage1_day_filter(df_d, current_hour, is_after_market):
     
     current_now_price = d_close.iloc[-1]
     
-    # 漲幅與乖離限制
     if is_after_market and len(d_close) >= 2:
         yesterday_close = d_close.iloc[-2]
         today_pct = ((current_now_price - yesterday_close) / yesterday_close) * 100
@@ -133,7 +131,6 @@ def stage1_day_filter(df_d, current_hour, is_after_market):
     bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100
     if bias_5ma > 8.0: return None
     
-    # 【Step 3】道氏理論日K形態分析 (回溯 20 天底底高結構)
     recent_lows = d_low.tail(20)
     recent_highs = d_high.tail(20)
     
@@ -147,7 +144,6 @@ def stage1_day_filter(df_d, current_hour, is_after_market):
     if current_low < prior_low: return None            
     if current_now_price < (prior_high * 0.96): return None
     
-    # M頭量能濾網
     if current_now_price >= prior_high:
         prior_high_vol = d_vol.loc[prior_high_idx]
         today_total_vol = d_vol.iloc[-1]
@@ -265,7 +261,7 @@ def download_day_and_filter(chunk, stock_map, current_hour, is_after_market):
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 × 40分鐘硬碟級快取快充版】...")
+    print("🚀 啟動【台股 666 × 盤中極速快取修正版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -284,11 +280,11 @@ if __name__ == "__main__":
         send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
         exit(0)
         
-    # 🧠 載入 Cache 與 記憶庫
+    # 🧠 載入 Cache 與 強制型態防護
     cache_dict = {}
     if os.path.exists(CACHE_FILE):
         try:
-            df_cache = pd.read_csv(CACHE_FILE)
+            df_cache = pd.read_csv(CACHE_FILE, dtype={"ticker": str})
             for _, row in df_cache.iterrows():
                 cache_dict[str(row["ticker"])] = row.to_dict()
         except:
@@ -303,7 +299,7 @@ if __name__ == "__main__":
         
     if current_hour >= 13 and current_minute >= 25:
         df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
-        cache_dict = {}  # 收盤清空快取
+        cache_dict = {}  
         if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
         print("🧹 已到收盤時間，清空計分板與快取庫。")
 
@@ -311,7 +307,7 @@ if __name__ == "__main__":
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
     
-    # ------------------ 【Step 3 & Step 4】海選階段 ------------------
+    # ------------------ 海選階段 ------------------
     chunk_size = 40  
     chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, total_count, chunk_size)]
     
@@ -326,7 +322,7 @@ if __name__ == "__main__":
                 
     print(f"📥 [海選結束] 1900檔成功精簡！共有 {len(day_passed_pool)} 檔標的通過日K與流動性漏斗。")
     
-    # ------------------ 【Step 5 & Step 6】分K與666精選階段 (內含強效 Cache 攔截) ------------------
+    # ------------------ 分K與666精選階段 (快取雙向攔截邏輯修復) ------------------
     results = []
     new_cache_rows = []
     
@@ -334,29 +330,39 @@ if __name__ == "__main__":
         passed_tickers = list(day_passed_pool.keys())
         uncached_tickers = []
         
-        # 🧠 檢查快取：若上次下載時間小於 40 分鐘，直接拿歷史結果，不用重新抓取與計算
         for ticker in passed_tickers:
-            sid = stock_map[ticker]["sid"]
+            sid = str(stock_map[ticker]["sid"])
             if sid in cache_dict:
-                c_data = cache_dict[sid]
-                last_time = datetime.datetime.strptime(c_data["timestamp"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz_taiwan)
-                time_diff_mins = (now_dt - last_time).total_seconds() / 60.0
-                
-                # 判斷現價是否完全相同（表示價格死魚沒變動）
-                current_now_p = day_passed_pool[ticker]["現價"]
-                
-                if time_diff_mins < 40.0 and abs(current_now_p - c_data["現價"]) < 0.01 and c_data["is_match"] == 1:
-                    print(f"🧠 [快取命中] {sid} {stock_map[ticker]['sname']} 數據未變動，直接套用歷史計算結果。")
-                    results.append({
-                        "代碼": sid, "名稱": stock_map[ticker]["sname"], "現價": c_data["現價"], 
-                        "60MA位置": c_data["ma60"], "布林上軌": c_data["bb_upper"], 
-                        "60分K值": c_data["kv"], "60分D值": c_data["dv"],
-                        "MACD柱": c_data["macd_diff"], "小時量比": c_data["vol_str"], 
-                        "VR值": c_data["vr_str"], "score": c_data["score"], "量比數字": c_data["vol_mult"],
-                        "道氏形態": day_passed_pool[ticker]["道氏形態"], "防守價": day_passed_pool[ticker]["防守價"], "預估風險": day_passed_pool[ticker]["預估風險"]
-                    })
-                    new_cache_rows.append(c_data)
-                    continue
+                try:
+                    c_data = cache_dict[sid]
+                    last_time = datetime.datetime.strptime(str(c_data["timestamp"]), "%Y-%m-%d %H:%M:%S").replace(tzinfo=tz_taiwan)
+                    time_diff_mins = (now_dt - last_time).total_seconds() / 60.0
+                    
+                    current_now_p = float(day_passed_pool[ticker]["現價"])
+                    cached_p = float(c_data["現價"])
+                    
+                    # 💡 【核心漏洞修復點】：40分鐘內，且現價完全沒有變動
+                    if time_diff_mins < 40.0 and abs(current_now_p - cached_p) < 0.01:
+                        # 情況 A：上次符合 666 指標，直接放入選股清單，不重新計算！
+                        if int(c_data["is_match"]) == 1:
+                            print(f"🧠 [快取命中-精選股] {sid} {stock_map[ticker]['sname']} 數據未變動，直接輸出標的。")
+                            results.append({
+                                "代碼": sid, "名稱": stock_map[ticker]["sname"], "現價": cached_p, 
+                                "60MA位置": float(c_data["ma60"]), "布林上軌": float(c_data["bb_upper"]), 
+                                "60分K值": float(c_data["kv"]), "60分D值": float(c_data["dv"]),
+                                "MACD柱": float(c_data["macd_diff"]), "小時量比": str(c_data["vol_str"]), 
+                                "VR值": str(c_data["vr_str"]), "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
+                                "道氏形態": str(day_passed_pool[ticker]["道氏形態"]), "防守價": float(day_passed_pool[ticker]["防守價"]), "預估風險": str(day_passed_pool[ticker]["預估風險"])
+                            })
+                        # 情況 B：上次就不符合，且此時價格沒變動 ➔ 它肯定還是不符合，直接跳過不抓取！
+                        else:
+                            print(f"🧠 [快取過濾-冷門股] {sid} {stock_map[ticker]['sname']} 沒動靜，直接過濾跳過。")
+                        
+                        new_cache_rows.append(c_data)
+                        continue
+                except:
+                    pass
+            # 只有當「快取超時」、「價格變動發動」、或者「歷史快取遺失」才需要放行下載分K
             uncached_tickers.append(ticker)
 
         if uncached_tickers:
@@ -377,16 +383,16 @@ if __name__ == "__main__":
                         df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
                         
                         final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, is_after_market)
-                        sid = stock_map[ticker]["sid"]
+                        sid = str(stock_map[ticker]["sid"])
                         
                         cache_info = {
                             "ticker": sid, "timestamp": now_dt.strftime("%Y-%m-%d %H:%M:%S"),
-                            "現價": day_passed_pool[ticker]["現價"], "is_match": 1 if final_res else 0,
-                            "ma60": final_res["60MA位置"] if final_res else 0, "bb_upper": final_res["布林上軌"] if final_res else 0,
-                            "kv": final_res["60分K值"] if final_res else 0, "dv": final_res["60分D值"] if final_res else 0,
-                            "macd_diff": final_res["MACD柱"] if final_res else 0, "vol_str": final_res["小時量比"] if final_res else "",
-                            "vr_str": final_res["VR值"] if final_res else "", "score": final_res["score"] if final_res else 0,
-                            "vol_mult": final_res["小時量比數字"] if final_res else 0
+                            "現價": float(day_passed_pool[ticker]["現價"]), "is_match": 1 if final_res else 0,
+                            "ma60": final_res["60MA位置"] if final_res else 0.0, "bb_upper": final_res["布林上軌"] if final_res else 0.0,
+                            "kv": final_res["60分K值"] if final_res else 0.0, "dv": final_res["60分D值"] if final_res else 0.0,
+                            "macd_diff": final_res["MACD柱"] if final_res else 0.0, "vol_str": final_res["小時量比"] if final_res else "",
+                            "vr_str": final_res["VR值"] if final_res else "", "score": final_res["score"] if final_res else 0.0,
+                            "vol_mult": final_res["小時量比數字"] if final_res else 0.0
                         }
                         new_cache_rows.append(cache_info)
 
@@ -403,13 +409,15 @@ if __name__ == "__main__":
                     except:
                         continue
                         
-        # 儲存最新的 Cache 檔案
+        # 🧠 快取持久化安全寫入
         if new_cache_rows:
             pd.DataFrame(new_cache_rows).to_csv(CACHE_FILE, index=False)
+        else:
+            pd.DataFrame(columns=["ticker","timestamp","現價","is_match","ma60","bb_upper","kv","dv","macd_diff","vol_str","vr_str","score","vol_mult"]).to_csv(CACHE_FILE, index=False)
                     
     print(f"\n🔊 全能雷達雙層洗滌完畢，最終精選出 {len(results)} 檔黃金標的。")
     
-    # ------------------ 推播與持久化儲存 (保持原汁原味) ------------------
+    # ------------------ 推播與持久化儲存 ------------------
     if results:
         df_report = pd.DataFrame(results)
         df_report = df_report.sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
@@ -481,4 +489,6 @@ if __name__ == "__main__":
             
         df_mem.to_csv(memory_file, index=False)
     else:
+        if not os.path.exists(memory_file):
+            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(memory_file, index=False)
         send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、真突破且爆量」之標的。")
