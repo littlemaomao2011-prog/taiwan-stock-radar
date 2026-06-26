@@ -97,18 +97,20 @@ def get_all_taiwan_stocks_official():
 # ==========================================
 # 2. 法人級漏斗：第一階段「日K與成交量極速海選」
 # ==========================================
-def stage1_day_filter(df_d, current_minute, is_after_market):
+def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_d.columns for col in required_cols): return None
     
     df_d = df_d.bfill().ffill()
+    # 如果是盤後且最後一根沒量，去掉最後一根
     if is_after_market and df_d["Volume"].iloc[-1] == 0 and len(df_d) >= 2:
         df_d = df_d.iloc[:-1]
 
     if len(df_d) < 20: return None
         
-    recent_5d_vol = df_d["Volume"].dropna().tail(5)
-    if len(recent_5d_vol) < 5 or recent_5d_vol.mean() < 500000: return None
+    # 💡 【優化點】：流動性海選改看「今天以前」的5日均量，避免早盤或未開盤前今天的0成交量拉低平均值
+    historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
+    if len(historical_vols) < 5 or historical_vols.mean() < 500000: return None
         
     d_close = df_d["Close"].squeeze().astype(float)
     d_high = df_d["High"].squeeze().astype(float)
@@ -144,6 +146,7 @@ def stage1_day_filter(df_d, current_minute, is_after_market):
     if current_low < prior_low: return None            
     if current_now_price < (prior_high * 0.96): return None
     
+    # 判斷真量突破
     if current_now_price >= prior_high:
         prior_high_vol = d_vol.loc[prior_high_idx]
         today_total_vol = d_vol.iloc[-1]
@@ -151,11 +154,15 @@ def stage1_day_filter(df_d, current_minute, is_after_market):
         if is_after_market:
             if today_total_vol < prior_high_vol: return None
         else:
-            # ⏱️ 日K的今日估算總量：因為日K包含整天 4.5 小時 (270分鐘)
-            # 為了防呆，開盤前幾分鐘比照動態權重推算
-            passed_mins = max(1, current_minute) 
-            estimated_today_vol = today_total_vol * (270.0 / passed_mins)
-            if estimated_today_vol < prior_high_vol: return None  
+            # ⏱️ 只有在真正的交易時間內（09:00~13:30）才執行時間估算
+            if 9 <= current_hour <= 13:
+                passed_mins = max(1, current_minute) if current_hour == 9 else (current_hour - 9) * 60 + current_minute
+                passed_mins = min(270.0, max(1.0, float(passed_mins)))
+                estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                if estimated_today_vol < prior_high_vol: return None  
+            else:
+                # 09:00 前的早報時段，放行不阻擋
+                pass
 
     stop_loss_price = round(min(prior_low, current_low), 2)
     risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
@@ -167,9 +174,9 @@ def stage1_day_filter(df_d, current_minute, is_after_market):
     }
 
 # ==========================================
-# 3. 法人級漏斗：第二、三階段「分K均線優先攔截，最後才算VR」
+# 3. 法人級漏斗：第二、三階段「分K均線優先攔截」
 # ==========================================
-def stage2_60m_filter(df_60m, day_res, current_minute, is_after_market):
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols): return None
     
@@ -199,19 +206,12 @@ def stage2_60m_filter(df_60m, day_res, current_minute, is_after_market):
     
     # 小時量比過濾
     v_mean_20h = v_ser.tail(21).head(20).mean()
-    if not is_after_market:
-        # ⏱️ 【核心優正：動態精準分鐘校準器】
-        # 取得這一根 60 分鐘 K 線目前已經跑了幾分鐘 (防呆最低為 1 分鐘)
+    if not is_after_market and (9 <= current_hour <= 13):
+        # ⏱️ 分鐘級動態小時量校準器
         passed_mins = max(1, current_minute)
-        
-        # 動態計算擴張係數： 60 / 當前已過分鐘數
         time_multiplier = 60.0 / passed_mins
-        
-        # 預估這一個小時最終會跑出來的成交量
         estimated_hour_vol = v_p * time_multiplier
         vol_mult = round(estimated_hour_vol / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
-        
-        # 嚴格把關量能：預估量必須大於前20小時均量的 0.8 倍才放行
         if vol_mult < 0.8: return None
     else:
         vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
@@ -243,16 +243,16 @@ def stage2_60m_filter(df_60m, day_res, current_minute, is_after_market):
     
     return {
         "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
-        "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍(動態預估)",
+        "小時量比數字": vol_mult, "小時量比": f"{vol_mult}倍(動態預估)" if not is_after_market else f"{vol_mult}倍",
         "60分K值": round(kv, 1), "60分D值": round(dv, 1), "MACD柱": round(macd_diff, 3),
         "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"]
     }
 
 # ==========================================
-# 4. 多執行緒平行高效洗滌引擎 (第一階段：純日K海選)
+# 4. 多執行緒平行高效洗滌引擎
 # ==========================================
-def download_day_and_filter(chunk, stock_map, current_minute, is_after_market):
+def download_day_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
     passed_day_stocks = {}
     try:
         data_d = yf.download(chunk, period="45d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
@@ -266,7 +266,7 @@ def download_day_and_filter(chunk, stock_map, current_minute, is_after_market):
             if df_stock_d.empty: continue
             df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
             
-            day_res = stage1_day_filter(df_stock_d, current_minute, is_after_market)
+            day_res = stage1_day_filter(df_stock_d, current_hour, current_minute, is_after_market)
             if day_res:
                 passed_day_stocks[ticker] = day_res
         except:
@@ -274,7 +274,7 @@ def download_day_and_filter(chunk, stock_map, current_minute, is_after_market):
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 × 盤中動態分鐘級校準版】...")
+    print("🚀 啟動【台股 666 × 脫鉤防開盤盲區版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -293,7 +293,6 @@ if __name__ == "__main__":
         send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
         exit(0)
         
-    # 🧠 載入 Cache 與 強制型態防護
     cache_dict = {}
     if os.path.exists(CACHE_FILE):
         try:
@@ -327,7 +326,7 @@ if __name__ == "__main__":
     day_passed_pool = {}
     print(f"⚡ [階段一] 啟動日K與流動性海選... 監控總數: {total_count} 檔")
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(download_day_and_filter, chunk, stock_map, current_minute, is_after_market): chunk for chunk in chunks}
+        futures = {executor.submit(download_day_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
         for future in as_completed(futures):
             chunk_res = future.result()
             if chunk_res:
@@ -335,7 +334,7 @@ if __name__ == "__main__":
                 
     print(f"📥 [海選結束] 1900檔成功精簡！共有 {len(day_passed_pool)} 檔標的通過日K與流動性漏斗。")
     
-    # ------------------ 分K與666精選階段 (快取雙向攔截邏輯) ------------------
+    # ------------------ 分K精選階段 ------------------
     results = []
     new_cache_rows = []
     
@@ -354,7 +353,6 @@ if __name__ == "__main__":
                     current_now_p = float(day_passed_pool[ticker]["現價"])
                     cached_p = float(c_data["現價"])
                     
-                    # 40分鐘內，且現價完全沒有變動
                     if time_diff_mins < 40.0 and abs(current_now_p - cached_p) < 0.01:
                         if int(c_data["is_match"]) == 1:
                             print(f"🧠 [快取命中-精選股] {sid} {stock_map[ticker]['sname']} 數據未變動，直接輸出標的。")
@@ -392,7 +390,7 @@ if __name__ == "__main__":
                         if df_stock_60m.empty: continue
                         df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
                         
-                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_minute, is_after_market)
+                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market)
                         sid = str(stock_map[ticker]["sid"])
                         
                         cache_info = {
@@ -419,7 +417,6 @@ if __name__ == "__main__":
                     except:
                         continue
                         
-        # 🧠 快取持久化安全寫入
         if new_cache_rows:
             pd.DataFrame(new_cache_rows).to_csv(CACHE_FILE, index=False)
         else:
