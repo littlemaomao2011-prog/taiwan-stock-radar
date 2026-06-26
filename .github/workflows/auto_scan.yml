@@ -13,11 +13,10 @@
           git add stock_memory.csv scan_cache.csv
           git commit -m "🔄 自動更新盤中雷達記憶庫與快取數據 [Skip CI]"
           
-          # 💡 【終極大絕招】：不用理會遠端衝突，直接使用 -f (force) 強制覆蓋雲端數據
-          # 這樣不管排程塞車多嚴重，虛擬主機算完的最新成果一定能順利寫入 GitHub！
-          echo "🚀 正在強制同步最新雷達數據至 GitHub..."
-          git push -f origin main
-          echo "✅ 數據已暴力同步成功！"
+          # 💡 【網頁直接改此段】：先強行拉取雲端最新狀態，再推送，絕對不會衝突
+          git pull --rebase origin main
+          git push origin main
+          echo "✅ 雷達數據已成功同步至 GitHub！"
         else
           echo "✨ 記憶庫與快取數據無任何變動，跳過推送。"
         fi
