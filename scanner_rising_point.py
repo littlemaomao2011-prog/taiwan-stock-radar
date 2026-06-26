@@ -167,7 +167,7 @@ def stage1_day_filter(df_d, current_hour, is_after_market):
     }
 
 # ==========================================
-# 3. 法人級漏斗：第二、三階段「60分K 與 666指標深度驗證」
+# 3. 法人級漏斗：第二、三階段「分K均線優先攔截，最後才算VR」
 # ==========================================
 def stage2_60m_filter(df_60m, day_res, current_hour, is_after_market):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
@@ -183,19 +183,19 @@ def stage2_60m_filter(df_60m, day_res, current_hour, is_after_market):
     h_ser = df_60m["High"].squeeze().astype(float)
     l_ser = df_60m["Low"].squeeze().astype(float)
     v_ser = df_60m["Volume"].squeeze().astype(float)
-    o_ser = df_60m["Open"].squeeze().astype(float)
     
+    c_p, v_p = float(c_ser.iloc[-1]), float(v_ser.iloc[-1])
+    
+    # 📌 【優化優先：均線攔截】先計算最輕量的 60MA，站不上直接出局
     ma60 = c_ser.rolling(60).mean().iloc[-1]
-    if pd.isna(ma60): return None
+    if pd.isna(ma60) or c_p < ma60: return None
     
-    c_p, o_p, v_p = float(c_ser.iloc[-1]), float(o_ser.iloc[-1]), float(v_ser.iloc[-1])
-    if c_p < ma60: return None
-    
-    # 布林帶過濾
+    # 📌 【優化優先：布林攔截】計算 20MA 布林中軌，站不上中軌直接出局
     ma20 = c_ser.rolling(20).mean()
     std20 = c_ser.rolling(20).std()
-    bb_upper, bb_middle = float((ma20 + 2 * std20).iloc[-1]), float(ma20.iloc[-1])
+    bb_middle = float(ma20.iloc[-1])
     if c_p < bb_middle: return None
+    bb_upper = float((ma20 + 2 * std20).iloc[-1])
     
     # 小時量比過濾 (盤中卡，盤後不卡)
     v_mean_20h = v_ser.tail(21).head(20).mean()
@@ -205,7 +205,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, is_after_market):
         else:
             if v_mean_20h > 0 and v_p < (v_mean_20h * 0.8): return None
 
-    # KD 運算
+    # KD 運算 (常規技術篩選)
     low_min = l_ser.rolling(60).min()
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
@@ -214,13 +214,13 @@ def stage2_60m_filter(df_60m, day_res, current_hour, is_after_market):
     kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     if kv < 60.0 or kv <= dv: return None
     
-    # MACD 運算
+    # MACD 運算 (常規技術篩選)
     ema12 = c_ser.ewm(span=12, adjust=False).mean()
     ema26 = c_ser.ewm(span=26, adjust=False).mean()
     macd_diff = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
     if macd_diff <= 0: return None
     
-    # VR 資金階梯運算
+    # 🔥 【壓軸重裝指標：VR 資金階梯】前面的輕量關卡全部通過，最後才來算最耗能的 VR
     chg = c_ser.diff()
     su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
     sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
@@ -266,7 +266,7 @@ def download_day_and_filter(chunk, stock_map, current_hour, is_after_market):
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 × 法人級結構優化 · 盤中/盤後全能雙效雷達】...")
+    print("🚀 啟動【台股 666 × 法人級結構優化 · 均線攔截 VR 壓軸版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -321,7 +321,6 @@ if __name__ == "__main__":
         passed_tickers = list(day_passed_pool.keys())
         print(f"⚡ [階段二] 僅對這 {len(passed_tickers)} 檔目標股進行分K下載與666技術指標驗證...")
         
-        # 由於股票數量大幅縮減，這裡直接分批下載 60m 分K
         passed_chunks = [passed_tickers[i:i + 20] for i in range(0, len(passed_tickers), 20)]
         
         for p_chunk in passed_chunks:
@@ -337,7 +336,7 @@ if __name__ == "__main__":
                     if df_stock_60m.empty: continue
                     df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
                     
-                    # 進行重度分K與指標過濾
+                    # 進行重度分K與指標過濾（內含均線優先攔截、VR壓軸）
                     final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, is_after_market)
                     if final_res:
                         sid = stock_map[ticker]["sid"]
