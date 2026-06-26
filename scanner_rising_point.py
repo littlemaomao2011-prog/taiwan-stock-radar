@@ -102,13 +102,12 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     if not all(col in df_d.columns for col in required_cols): return None
     
     df_d = df_d.bfill().ffill()
-    # 如果是盤後且最後一根沒量，去掉最後一根
     if is_after_market and df_d["Volume"].iloc[-1] == 0 and len(df_d) >= 2:
         df_d = df_d.iloc[:-1]
 
     if len(df_d) < 20: return None
         
-    # 💡 【優化點】：流動性海選改看「今天以前」的5日均量，避免早盤或未開盤前今天的0成交量拉低平均值
+    # 歷史均量海選（看前5日均量）
     historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
     if len(historical_vols) < 5 or historical_vols.mean() < 500000: return None
         
@@ -154,14 +153,19 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
         if is_after_market:
             if today_total_vol < prior_high_vol: return None
         else:
-            # ⏱️ 只有在真正的交易時間內（09:00~13:30）才執行時間估算
             if 9 <= current_hour <= 13:
-                passed_mins = max(1, current_minute) if current_hour == 9 else (current_hour - 9) * 60 + current_minute
+                # ⏱️ 修正日K累積時間計算
+                passed_mins = (current_hour - 9) * 60 + current_minute
                 passed_mins = min(270.0, max(1.0, float(passed_mins)))
-                estimated_today_vol = today_total_vol * (270.0 / passed_mins)
-                if estimated_today_vol < prior_high_vol: return None  
+                
+                # 💡 【特赦機制】：若在開盤前45分鐘(09:00~09:45)，由於yfinance成交量同步延遲，放寬日K爆量把關標準
+                if passed_mins <= 45:
+                    estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                    if estimated_today_vol < (prior_high_vol * 0.4): return None  # 降至0.4倍特赦防誤殺
+                else:
+                    estimated_today_vol = today_total_vol * (270.0 / passed_mins)
+                    if estimated_today_vol < prior_high_vol: return None  
             else:
-                # 09:00 前的早報時段，放行不阻擋
                 pass
 
     stop_loss_price = round(min(prior_low, current_low), 2)
@@ -212,7 +216,11 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         time_multiplier = 60.0 / passed_mins
         estimated_hour_vol = v_p * time_multiplier
         vol_mult = round(estimated_hour_vol / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
-        if vol_mult < 0.8: return None
+        
+        # 💡 【核心修正】：台股開盤前45分鐘內(09:00~09:45)，因開盤量大隨後遞減，動態預估公式會被嚴重低估
+        # 故在早盤前45分鐘，將量能過濾門檻放寬至 0.4 倍，全面攔截剛發動的黑馬股
+        threshold = 0.4 if current_minute <= 45 and current_hour == 9 else 0.8
+        if vol_mult < threshold: return None
     else:
         vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
 
@@ -274,7 +282,7 @@ def download_day_and_filter(chunk, stock_map, current_hour, current_minute, is_a
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 × 脫鉤防開盤盲區版】...")
+    print("🚀 啟動【台股 666 × 早盤特赦動態優化版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -496,6 +504,3 @@ if __name__ == "__main__":
             
         df_mem.to_csv(memory_file, index=False)
     else:
-        if not os.path.exists(memory_file):
-            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(memory_file, index=False)
-        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、真突破且爆量」之標的。")
