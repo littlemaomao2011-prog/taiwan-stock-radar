@@ -139,11 +139,12 @@ def get_sector_heat_status():
     return heat_map
 
 # ==========================================
-# 0. 大盤風控與環境結構驗證 (精準置入當日危機感)
+# 0. 大盤風控與環境結構驗證 (新增大盤 20日實質漲幅計算)
 # ==========================================
 def check_market_filter_and_holiday():
     print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA)...")
     market_pct = 0.0
+    market_20d_pct = 0.0  # ✨ 新增：大盤近 20 日實質漲幅
     try:
         market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True, threads=False)
         if not market_data_d.empty:
@@ -163,6 +164,10 @@ def check_market_filter_and_holiday():
             if not twii_close_d.empty and not twii_open_d.empty:
                 market_pct = ((twii_close_d.iloc[-1] - twii_open_d.iloc[-1]) / twii_open_d.iloc[-1]) * 100
             
+            # ✨ 計算大盤近 20 日實質漲幅 % (今日收盤價對比 20 天前的收盤價)
+            if len(twii_close_d) >= 21:
+                market_20d_pct = ((twii_close_d.iloc[-1] - twii_close_d.iloc[-21]) / twii_close_d.iloc[-21]) * 100
+
             if len(twii_close_d) >= MARKET_MA_PERIOD and len(two_close_d) >= MARKET_MA_PERIOD:
                 twii_ma = twii_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
                 two_ma = two_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
@@ -179,17 +184,17 @@ def check_market_filter_and_holiday():
                 market_crash_threshold = current_market_atr * 0.3
                 
                 if twii_perf < MARKET_DROP_THRESHOLD and two_perf < MARKET_DROP_THRESHOLD:
-                    return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！", market_pct
+                    return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！", market_pct, market_20d_pct
                 elif market_current_drop > market_crash_threshold:
-                    return "WARN", f"⚡ 當日急殺危機感觸發！大盤當日自高點急墜 {market_current_drop:.0f} 點 (超標 0.3 ATR)。市場恐慌，注意高檔出貨風險！", market_pct
+                    return "WARN", f"⚡ 當日急殺危機感觸發！大盤當日自高點急墜 {market_current_drop:.0f} 點 (超標 0.3 ATR)。市場恐慌，注意高檔出貨風險！", market_pct, market_20d_pct
                 elif twii_perf < MARKET_DROP_THRESHOLD or two_perf < MARKET_DROP_THRESHOLD:
                     weak_target = "大盤" if twii_perf < MARKET_DROP_THRESHOLD else "櫃買"
-                    return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！", market_pct
+                    return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！", market_pct, market_20d_pct
                 else:
-                    return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上", market_pct
+                    return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上", market_pct, market_20d_pct
     except Exception as e:
         print(f"ℹ️ 大盤下載異常 ({e})，自動切換至常規放行。")
-    return "OK", "🟢 大盤連線受阻，常規放行", market_pct
+    return "OK", "🟢 大盤連線受阻，常規放行", market_pct, market_20d_pct
 
 # ==========================================
 # 1. 防阻擋、全功能台股名單下載引擎
@@ -342,12 +347,18 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
 
     risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
     
+    # ✨ 計算個股近 20 日的實質漲幅 % (收盤價對比 20 天前)
+    stock_20d_pct = 0.0
+    if len(d_close) >= 21:
+        stock_20d_pct = ((current_now_price - d_close.iloc[-21]) / d_close.iloc[-21]) * 100
+
     return {
         "現價": current_now_price, "道氏形態": dow_status,
-        "防守價": stop_loss_price, "預估風險": f"{risk_pct}%", "今日漲幅": f"{today_pct:+.1f}%"
+        "防守價": stop_loss_price, "預估風險": f"{risk_pct}%", "今日漲幅": f"{today_pct:+.1f}%",
+        "stock_20d_pct": stock_20d_pct  # 傳遞給 Stage 2
     }
 
-def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_info, market_today_pct):
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_info, market_today_pct, market_20d_pct):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols): return None
     df_60m = df_60m.bfill().ffill()
@@ -407,12 +418,14 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     sd_series = v_ser.where(chg < 0, 0).rolling(26).sum()
     sf_series = v_ser.where(chg == 0, 0).rolling(26).sum()
     
-    vr_series = ((su_series + 0.5 * sf_series) / (sd_series.replace(0, 1) + 0.5 * sf_series)) * 100
-    vr26 = float(vr_series.iloc[-1])
-    vr_trend = "↗️" if vr26 >= (float(vr_series.iloc[-2]) if len(vr_series) >= 2 else vr26) else "↘️"
+    res_vr = ((su_series + 0.5 * sf_series) / (sd_series.replace(0, 1) + 0.5 * sf_series)) * 100
+    vr26 = float(res_vr.iloc[-1])
+    vr_trend = "↗️" if vr26 >= (float(res_vr.iloc[-2]) if len(res_vr) >= 2 else vr26) else "↘️"
     if vr26 < 100.0: return None
     
-    # 評分大腦
+    # ==========================================
+    # 🧠 精密評分大腦演算法 (融合實質 20日 RS 相對強度)
+    # ==========================================
     score = 0
     if day_res["道氏形態"] == "今日突破 ↗️": score += 25
     else: score += 15
@@ -426,13 +439,20 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     if 150.0 <= vr26 <= 350.0: score += 10
     elif vr26 > 350.0: score += 3
     else: score += 6
-    try:
-        stock_open_p = float(df_60m["Open"].squeeze().astype(float).iloc[0])
-        stock_today_pct = ((c_p - stock_open_p) / stock_open_p) * 100
-    except:
-        stock_today_pct = 0.0
-    if stock_today_pct > market_today_pct: score += 10
-    else: score += 5
+    
+    # ⚡ 【實質 RS 相對強度加分改造】
+    # 公式：RS 差值 = 個股 20日漲幅% - 大盤 20日漲幅%
+    stock_20d_pct = day_res.get("stock_20d_pct", 0.0)
+    rs_diff = stock_20d_pct - market_20d_pct
+    
+    if rs_diff > 0:
+        # 贏大盤：贏多少百分點，就加多少分！(設計動態上限最大加 20 分，防止權重爆表)
+        rs_bonus = min(20.0, rs_diff)
+        score += rs_bonus
+    else:
+        # 輸大盤：不加分
+        rs_bonus = 0.0
+
     try: risk_val = float(day_res["預估風險"].replace("%", ""))
     except: risk_val = 10.0
     if risk_val <= 7.0: score += 5
@@ -452,7 +472,8 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         "VR值數字": vr26, "VR值": f"{round(vr26, 1)}%", "score": score,
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
         "今日漲幅": day_res["今日漲幅"], "距離上軌": dist_to_bb_upper_str,
-        "KD趨勢": f"K{round(kv,1)}/D{round(dv,1)} {kd_trend}", "VR趨勢": f"{round(vr26,1)}% {vr_trend}"
+        "KD趨勢": f"K{round(kv,1)}/D{round(dv,1)} {kd_trend}", "VR趨勢": f"{round(vr26,1)}% {vr_trend}",
+        "rs_display": f"個股:{stock_20d_pct:+.1f}% | 大盤:{market_20d_pct:+.1f}% | RS 差值:<b>{rs_diff:+.1f}%</b>" # 用於戰報顯示
     }
 
 def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
@@ -490,7 +511,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v3.6 Heat Score 終極融合版】...")
+    print("🚀 啟動【台股 666 精選雷達 v3.6 實質 RS 強度終極版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -504,7 +525,8 @@ if __name__ == "__main__":
         if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
         if os.path.exists(MEMORY_FILE): os.remove(MEMORY_FILE)
 
-    filter_status, filter_msg, market_today_pct = check_market_filter_and_holiday()
+    # 接收包含大盤 20日漲幅 的回傳值
+    filter_status, filter_msg, market_today_pct, market_20d_pct = check_market_filter_and_holiday()
     if filter_status == "LOCK":
         send_tg_msg(f"🔔 <b>【台股 666 風控回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 鐵血空倉鎖倉！")
         exit(0)
@@ -558,7 +580,6 @@ if __name__ == "__main__":
             f"此非程式邏輯問題，而是 <code>yfinance</code> 遭受 Yahoo 伺服器流量管制。\n"
             f"➔ 本輪雷達暫停掃描，自動啟動防禦性空倉。"
         )
-        print("🚨 警告：day_passed_pool 為空。發送 Telegram 降級警告訊息。")
         send_tg_msg(error_report)
         exit(0)
         
@@ -584,7 +605,8 @@ if __name__ == "__main__":
                                 "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
                                 "道氏形態": str(day_passed_pool[ticker]["道氏形態"]), "防守價": round(float(day_passed_pool[ticker]["防守價"]), 2), "預估風險": str(day_passed_pool[ticker]["預估風險"]),
                                 "今日漲幅": str(day_passed_pool[ticker]["今日漲幅"]), "距離上軌": str(c_data.get("dist_to_bb_str", "計算中")),
-                                "KD趨勢": str(c_data.get("kd_trend_str", "N/A")), "VR趨勢": str(c_data.get("vr_trend_str", "N/A")), "小時量比": str(c_data["vol_str"])
+                                "KD趨勢": str(c_data.get("kd_trend_str", "N/A")), "VR趨勢": str(c_data.get("vr_trend_str", "N/A")), "小時量比": str(c_data["vol_str"]),
+                                "rs_display": str(c_data.get("rs_display", "N/A"))
                             })
                         new_cache_rows.append(c_data)
                         continue
@@ -615,7 +637,7 @@ if __name__ == "__main__":
                         sector_name = get_stock_sector_name(sid)
                         sector_info = sector_heat_map.get(sector_name, {"score": 50, "is_hot": True, "desc": "✨"})
                         
-                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct)
+                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct, market_20d_pct)
                         
                         if final_res:
                             cache_info = {
@@ -625,7 +647,8 @@ if __name__ == "__main__":
                                 "kv": final_res["60分K值"], "dv": final_res["60分D值"], "macd_diff": final_res["MACD柱"],
                                 "vol_str": final_res["小時量比"], "vr_str": final_res["VR值"], "score": final_res["score"],
                                 "vol_mult": final_res["小時量比數字"], "dist_to_bb_str": final_res["距離上軌"],
-                                "kd_trend_str": final_res["KD趨勢"], "vr_trend_str": final_res["VR趨勢"]
+                                "kd_trend_str": final_res["KD趨勢"], "vr_trend_str": final_res["VR趨勢"],
+                                "rs_display": final_res["rs_display"]
                             }
                             new_cache_rows.append(cache_info)
 
@@ -635,7 +658,8 @@ if __name__ == "__main__":
                                 "score": final_res["score"], "量比數字": final_res["小時量比數字"],
                                 "道氏形態": final_res["道氏形態"], "防守價": final_res["防守價"], "預估風險": final_res["預估風險"],
                                 "今日漲幅": final_res["今日漲幅"], "距離上軌": final_res["距離上軌"],
-                                "KD趨勢": final_res["KD趨勢"], "VR趨勢": final_res["VR趨勢"], "小時量比": final_res["小時量比"]
+                                "KD趨勢": final_res["KD趨勢"], "VR趨勢": final_res["VR趨勢"], "小時量比": final_res["小時量比"],
+                                "rs_display": final_res["rs_display"]
                             })
                     except:
                         continue
@@ -675,6 +699,7 @@ if __name__ == "__main__":
             body_msg += (
                 f"🎯 <b>{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> {tag}\n"
                 f" ➔ 板塊: {sector_name} (<b>{sector_info['desc']}</b>)\n"
+                f" ➔ 強度: {row['rs_display']}\n"  # ✨ 戰報直接印出你的專屬實質 RS 比對
                 f" ➔ 現價: <code>{row['現價']}</code> ({row['今日漲幅']}) | 量比: <code>{row['小時量比']}</code>\n"
                 f" ➔ 趨勢: {row['KD趨勢']} | {row['VR趨勢']} | 軌道: {row['距離上軌']}\n"
                 f" ➔ 防守價: <code>{row['防守價']}</code> (風險: <b>{row['預估風險']}</b>)\n"
