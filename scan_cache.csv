@@ -1,0 +1,2 @@
+ticker,timestamp,現價,is_match,ma60,bb_upper,kv,dv,macd_diff,vol_str,vr_str,score,vol_mult
+8071,2026-06-26 09:18:06,30.799999237060547,1,26.93,31.16,92.9,87.0,0.307,0.9倍(動態預估),129.2%,-21.0,0.9
