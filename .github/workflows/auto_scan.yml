@@ -1,4 +1,27 @@
-steps:
+name: Taiwan Stock 666 Scanner
+
+on:
+  schedule:
+    - cron: '5 1 * * 1-5'   # 09:05
+    - cron: '30 1 * * 1-5'  # 09:30
+    - cron: '50 1 * * 1-5'  # 09:50
+    - cron: '15 2 * * 1-5'  # 10:15
+    - cron: '35 2 * * 1-5'  # 10:35
+    - cron: '0 3 * * 1-5'   # 11:00
+    - cron: '30 3 * * 1-5'  # 11:30
+    - cron: '0 4 * * 1-5'   # 12:00
+    - cron: '30 4 * * 1-5'  # 12:30
+    - cron: '0 5 * * 1-5'   # 13:00
+    - cron: '20 5 * * 1-5'  # 13:20
+  workflow_dispatch:        
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       
+
+    steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
@@ -13,27 +36,31 @@ steps:
         python -m pip install --upgrade pip
         pip install yfinance pandas numpy requests lxml openpyxl
 
-    # 💡 核心變更 1：從 GitHub Artifacts 下載「上一輪」存下來的快取與記憶檔案
-    - name: Download prior scan cache
-      uses: actions/download-artifact@v4
-      with:
-        name: radar-memory-cache
-        path: .
-      continue-on-error: true # 第一次執行如果沒有快取，自動忽略不報錯
-
-    # 執行您的選股雷達核心
     - name: Run scanner
       env:
         PYTHONUNBUFFERED: "1"
       run: python scanner_rising_point.py
 
-    # 💡 核心變更 2：執行完畢，不推 git，直接把最新檔案打包上傳成 Artifact
-    # GitHub 會自動用最新的一期覆蓋它，盤中排程再密也絕對不會相撞！
-    - name: Upload latest scan cache
-      uses: actions/upload-artifact@v4
-      with:
-        name: radar-memory-cache
-        path: |
-          stock_memory.csv
-          scan_cache.csv
-        retention-days: 2 # 暫存 2 天即可，省空間又高效率
+    - name: Commit and Push memory changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        if [ ! -f stock_memory.csv ]; then
+          echo "stock_id,last_run,total_count" > stock_memory.csv
+        fi
+        
+        if git status --porcelain | grep -qE "stock_memory.csv|scan_cache.csv"; then
+          # 在提交前拉取最新遠端，降低衝突機率
+          git pull --rebase origin main || true
+          
+          git add stock_memory.csv scan_cache.csv
+          git commit -m "🔄 自動更新盤中雷達記憶庫與快取數據 [Skip CI]"
+          
+          # 💡 終極防護牆：後方加上 || true，就算因排程重疊被 rejected 也不會報錯中斷工作流
+          echo "🚀 正在同步最新雷達數據至 GitHub..."
+          git push origin main || true
+          echo "✅ 雷達數據同步程序執行完畢！"
+        else
+          echo "✨ 記憶庫與快取數據無任何變動，跳過推送。"
+        fi
