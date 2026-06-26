@@ -27,48 +27,40 @@ def send_telegram_message(message):
 # ==========================================
 def check_market_risk():
     """
-    大盤風控檢查：
-    1. 🔴 紅燈熔斷：使用精準的『日K線 20MA』作為大盤生命線，避開小時線非交易時段的數據失真。
-    2. 🟡 黃燈警戒：當日跌幅是否超過『20日ATR』的 0.2 倍（換算成每小時恐慌殺盤）。不停機，但及格線調高至 80 分！
-    3. 🟢 綠燈安全：大盤結構健康 ➔ 個股錄取門檻維持常態的 60 分。
+    大盤風控檢查（高位階超寬容版）：
+    1. 🔴 紅燈熔斷：失守 3% 緩衝防線才熔斷（給予超過 1300 點震盪空間）。
+    2. 🟡 黃燈警戒：跌破 20MA 或短線急殺，啟動 80 分選股模式。
+    3. 🟢 綠燈安全：結構健康，維持 60 分。
     """
     print("正在分析加權指數日線風控狀態...")
     taiex = yf.Ticker("^TWII")
-    # 抓取日線資料 (1d)，確保大盤點位 100% 精準
     df = taiex.history(period="3mo", interval="1d")
     
     if df.empty or len(df) < 20:
-        print("大盤日線資料不足，安全起見暫停執行。")
         return False, 60, "⚠️ 大盤資料讀取失敗"
 
-    # 1. 計算大盤日線 20MA
     df['20MA'] = talib.SMA(df['Close'], timeperiod=20)
     current_close = df['Close'].iloc[-1]
     current_20ma = df['20MA'].iloc[-1]
     
-    # 2. 計算大盤 20日 ATR
+    # 🔥 關鍵調整：改為 5% 緩衝，極大化你的操作空間
+    melt_threshold = current_20ma * 0.95 
+    
     df['ATR'] = talib.ATR(df['High'], df['Low'], df['Close'], timeperiod=20)
     current_atr = df['ATR'].iloc[-1]
-    
-    # 計算當日大盤從最高點至今的跌幅
     current_drop = df['High'].iloc[-1] - current_close
-    # 日線 ATR 換算成每小時的急殺警戒閾值 (大約為 0.2 倍 ATR)
     crash_threshold = current_atr * 0.2
 
-    print(f"大盤真實最新現價: {current_close:.2f} | 日線 20MA: {current_20ma:.2f}")
-    print(f"大盤當日至今跌幅: {current_drop:.2f} | 每小時暴跌警戒線 (0.2 ATR): {crash_threshold:.2f}")
-
-    # 1. 趨勢大壞：現價低於日線 20MA ➔ 紅燈熔斷
-    if current_close < current_20ma:
-        return False, 60, f"🔴 紅燈熔斷：大盤跌破日線 20MA 生命線 ({current_close:.0f} < {current_20ma:.0f})"
+    # 1. 🔴 紅燈熔斷：只在跌破 3% 緩衝防線時才熔斷
+    if current_close < melt_threshold:
+        return False, 60, f"🔴 紅燈熔斷：大盤失守 3% 緩衝防線 ({current_close:.0f} < {melt_threshold:.0f})"
     
-    # 2. 短線急殺：當日跌幅過大 ➔ 黃燈警戒，個股門檻調高至 80 分
-    if current_drop > crash_threshold:
-        return True, 80, "🟡 黃燈警戒：大盤盤中驚現急殺！啟動【地獄級面試】，個股及格線提高至 80 分！"
+    # 2. 🟡 黃燈警戒
+    if current_close < current_20ma or current_drop > crash_threshold:
+        return True, 80, f"🟡 黃燈警戒：大盤回檔中，啟動【逆境淘金模式】(80分選股)"
 
-    # 3. 風平浪靜 ➔ 個股門檻維持常態 60 分
-    return True, 60, "🟢 綠燈安全：大盤結構健康，個股及格線維持標準 60 分"
-
+    # 3. 🟢 綠燈安全
+    return True, 60, "🟢 綠燈安全：大盤結構健康，維持標準 60 分"
 # ==========================================
 # 🧠 第二關：個股 60分K 量化評分大腦
 # ==========================================
