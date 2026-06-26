@@ -144,7 +144,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     d_open = df_d["Open"].squeeze().astype(float)
     d_vol = df_d["Volume"].squeeze().astype(float)
     
-    # 這裡進行精準的四捨五入，擺脫浮點數尾巴
+    # 精準四捨五入現價，擺脫浮點數雜訊
     current_now_price = round(float(d_close.iloc[-1]), 2)
     
     if is_after_market and len(d_close) >= 2:
@@ -207,15 +207,17 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
                     if estimated_today_vol < prior_high_3d_avg_vol: return None  
 
     # ------------------------------------------------------------
-    # 💎 結構性 Swing Low / Pivot Low 防守機制 (包含防碎數 round)
+    # 💎 真正的 Swing Low / Pivot Low 尋找機制
     # ------------------------------------------------------------
     stop_loss_price = None
+    # 從倒數第 3 天往回尋找第一個符合左右各 2 天窗格的 Pivot Low
     for i in range(len(d_low) - 3, 1, -1):
         if (d_low.iloc[i] < d_low.iloc[i-1] and d_low.iloc[i] < d_low.iloc[i-2] and
             d_low.iloc[i] < d_low.iloc[i+1] and d_low.iloc[i] < d_low.iloc[i+2]):
             stop_loss_price = round(float(d_low.iloc[i]), 2)
             break
             
+    # 如果前 20 天內完全沒遇到嚴格的 Pivot Low 拐點，則退回底底高結構低點防禦
     if stop_loss_price is None or stop_loss_price > current_now_price:
         stop_loss_price = round(min(prior_low, current_low), 2)
 
@@ -328,7 +330,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v2.6 正式精準版】...")
+    print("🚀 啟動【台股 666 精選雷達 v2.6 正式 Pivot 防守版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -505,7 +507,7 @@ if __name__ == "__main__":
                     f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 {WEEKLY_MA_PERIOD}MA 保護機制)</b>\n"
                     f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
                     f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
-                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
+                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\\n"
                     f" 🎯 <b>鐵血防守點: {row['防守價']} (預估風險潛在跌幅: {row['預估風險']})</b>\n"
                 )
         
