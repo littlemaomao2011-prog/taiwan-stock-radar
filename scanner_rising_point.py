@@ -8,6 +8,7 @@ import re
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import talib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # 100% 靜音令與忽略警告通知
@@ -138,7 +139,7 @@ def get_sector_heat_status():
     return heat_map
 
 # ==========================================
-# 0. 大盤風控與環境結構驗證
+# 0. 大盤風控與環境結構驗證 (精準置入當日危機感)
 # ==========================================
 def check_market_filter_and_holiday():
     print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA)...")
@@ -150,10 +151,14 @@ def check_market_filter_and_holiday():
                 twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
                 two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
                 twii_open_d = market_data_d["Open"]["^TWII"].dropna().astype(float)
+                twii_high_d = market_data_d["High"]["^TWII"].dropna().astype(float)
+                twii_low_d = market_data_d["Low"]["^TWII"].dropna().astype(float)
             else:
                 twii_close_d = market_data_d["Close"].dropna().astype(float)
                 two_close_d = market_data_d["Close"].dropna().astype(float)
                 twii_open_d = market_data_d["Open"].dropna().astype(float)
+                twii_high_d = market_data_d["High"].dropna().astype(float)
+                twii_low_d = market_data_d["Low"].dropna().astype(float)
             
             if not twii_close_d.empty and not twii_open_d.empty:
                 market_pct = ((twii_close_d.iloc[-1] - twii_open_d.iloc[-1]) / twii_open_d.iloc[-1]) * 100
@@ -167,11 +172,28 @@ def check_market_filter_and_holiday():
                 twii_perf = ((twii_now_d - twii_ma) / twii_ma) * 100
                 two_perf = ((two_now_d - two_ma) / two_ma) * 100
                 
+                # ⚡ 核心優化：使用 TA-Lib 計算大盤日線 20日 ATR，取得當日急殺危機感
+                market_atr_series = talib.ATR(twii_high_d, twii_low_d, twii_close_d, timeperiod=20)
+                current_market_atr = market_atr_series.iloc[-1] if not pd.isna(market_atr_series.iloc[-1]) else 150.0
+                
+                # 計算當日盤中最大回檔 (今日最高價 - 今日收盤現價)
+                market_current_drop = twii_high_d.iloc[-1] - twii_now_d
+                market_crash_threshold = current_market_atr * 0.3 # 閥值設定為 0.3 倍 ATR
+                
+                # 判定一：雙破均線，觸發你原本的鐵血空倉令 (LOCK)
                 if twii_perf < MARKET_DROP_THRESHOLD and two_perf < MARKET_DROP_THRESHOLD:
                     return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！", market_pct
+                
+                # 判定二：【新增當日危機感】即使沒有雙破均線，只要當天殺盤過深 (大於 0.3 ATR)，轉 WARN 黃燈，但照常放行篩選股票
+                elif market_current_drop > market_crash_threshold:
+                    return "WARN", f"⚡ 當日急殺危機感觸發！大盤當日自高點急墜 {market_current_drop:.0f} 點 (超標 0.3 ATR)。市場恐慌，注意高檔出貨風險！", market_pct
+                
+                # 判定三：單一破均線的常規 WARN
                 elif twii_perf < MARKET_DROP_THRESHOLD or two_perf < MARKET_DROP_THRESHOLD:
                     weak_target = "大盤" if twii_perf < MARKET_DROP_THRESHOLD else "櫃買"
                     return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！", market_pct
+                
+                # 判定四：安全放行 OK
                 else:
                     return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上", market_pct
     except Exception as e:
@@ -674,5 +696,3 @@ if __name__ == "__main__":
             send_tg_msg(f"📦 <b>【標準 666 續報尾包】</b>\n------------------------\n" + "\n".join(temp_list))
             
         df_mem.to_csv(MEMORY_FILE, index=False)
-    else:
-        send_tg_msg(header_msg + "❌ 目前主力池中無符合週K保護、底底高爆量與技術面完美之標的。")
