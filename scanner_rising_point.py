@@ -20,10 +20,20 @@ pd.set_option('display.unicode.east_asian_width', True)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 1000)
 
-# ⚠️ 請確認這是您正確的 Telegram 金鑰與 ID
+# ==========================================
+# ⚙️ 頂層參數配置區（方便動態微調）
+# ==========================================
 TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
 TELEGRAM_CHAT_ID = "5220963669"
-CACHE_FILE = "scan_cache.csv"  # 🧠 快取資料庫
+CACHE_FILE = "scan_cache.csv"      # 🧠 快取資料庫
+MEMORY_FILE = "stock_memory.csv"    # 📈 記憶庫
+
+# 大盤風控自訂閥值
+MARKET_MA_PERIOD = 20        # 大盤風控均線天數 (預設 20MA 月線)
+MARKET_DROP_THRESHOLD = 0.0  # 跌破均線幾 % 啟動鐵血空倉 (例如 -0.5 代表要跌破 20MA 超過 0.5% 才鎖倉)
+
+# 個股長線保護閥值
+WEEKLY_MA_PERIOD = 20        # 週 K 線趨勢保護天數 (預設週 20MA)
 
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -36,7 +46,7 @@ def send_tg_msg(msg):
 # 0. 大盤風控與環境結構驗證
 # ==========================================
 def check_market_filter_and_holiday():
-    print("🌍 正在下載大盤數據並驗證環境結構...")
+    print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA, 鎖倉閥值: {MARKET_DROP_THRESHOLD}%)...")
     try:
         market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
         if not market_data_d.empty:
@@ -47,19 +57,24 @@ def check_market_filter_and_holiday():
                 twii_close_d = market_data_d["Close"].dropna().astype(float)
                 two_close_d = market_data_d["Close"].dropna().astype(float)
             
-            if len(twii_close_d) >= 20 and len(two_close_d) >= 20:
-                twii_ma20 = twii_close_d.rolling(20).mean().iloc[-1]
-                two_ma20 = two_close_d.rolling(20).mean().iloc[-1]
+            if len(twii_close_d) >= MARKET_MA_PERIOD and len(two_close_d) >= MARKET_MA_PERIOD:
+                twii_ma = twii_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
+                two_ma = two_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
                 twii_now_d = twii_close_d.iloc[-1]
                 two_now_d = two_close_d.iloc[-1]
                 
-                if twii_now_d < twii_ma20 and two_now_d < two_ma20:
-                    return "LOCK", "🔴 <b>【極度危險】大盤與櫃買雙雙跌破日K月線(20MA)！啟動鐵血空倉令！</b>"
-                elif twii_now_d < twii_ma20 or two_now_d < two_ma20:
-                    weak_target = "大盤" if twii_now_d < twii_ma20 else "櫃買"
-                    return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K月線(20MA)結構！</b>"
+                # 計算與 MA 的乖離/跌破百分比
+                twii_perf = ((twii_now_d - twii_ma) / twii_ma) * 100
+                two_perf = ((two_now_d - two_ma) / two_ma) * 100
+                
+                # 依據頂層變數 MARKET_DROP_THRESHOLD 判定是否鎖倉 (跌幅超過自訂 % 數)
+                if twii_perf < MARKET_DROP_THRESHOLD and two_perf < MARKET_DROP_THRESHOLD:
+                    return "LOCK", f"🔴 <b>【極度危險】大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙雙跌破日K {MARKET_MA_PERIOD}MA 閥值！啟動鐵血空倉令！</b>"
+                elif twii_perf < MARKET_DROP_THRESHOLD or two_perf < MARKET_DROP_THRESHOLD:
+                    weak_target = "大盤" if twii_perf < MARKET_DROP_THRESHOLD else "櫃買"
+                    return "WARN", f"⚠️ <b>【盤勢波段轉弱】{weak_target}已跌破日K {MARKET_MA_PERIOD}MA 結構閥值！</b>"
                 else:
-                    return "OK", "🟢 <b>【多頭環境安全】大盤與櫃買穩守在日線20MA之上，雷達全力開火！</b>"
+                    return "OK", f"🟢 <b>【多頭環境安全】大盤與櫃買穩守在日線 {MARKET_MA_PERIOD}MA 之上，雷達全力開火！</b>"
     except Exception as e:
         print(f"ℹ️ 大盤下載異常 ({e})，自動切換至常規放行。")
     return "OK", "🟢 <b>【常規安全放行】大盤連線受阻，自動轉為常規個股多頭掃描模式。</b>"
@@ -93,6 +108,24 @@ def get_all_taiwan_stocks_official():
         for sid, sname, m_type in [("6141","柏承","TWO"), ("6901","鑽石投資","TW"), ("8071","能率網通","TWO")]:
             stock_dict[f"{sid}.{m_type}"] = {"sid": sid, "sname": sname}
     return stock_dict
+
+# ==========================================
+# 1.5 週 K 線大趨勢保護層 (長線保護短線)
+# ==========================================
+def stage0_weekly_filter(df_w):
+    """
+    擴充功能：週 K 波段大趨勢保護。現價必須高於週 K 線的 20MA。
+    """
+    if df_w.empty or len(df_w) < WEEKLY_MA_PERIOD: return False
+    df_w = df_w.bfill().ffill()
+    w_close = df_w["Close"].squeeze().astype(float)
+    
+    current_price = w_close.iloc[-1]
+    weekly_ma = w_close.rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
+    
+    if pd.isna(weekly_ma) or current_price < weekly_ma:
+        return False
+    return True
 
 # ==========================================
 # 2. 法人級漏斗：第一階段「日K與成交量極速海選」
@@ -157,15 +190,13 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
                 passed_mins = (current_hour - 9) * 60 + current_minute
                 passed_mins = min(270.0, max(1.0, float(passed_mins)))
                 
-                # 💡 早盤開盤特赦機制：09:45前因延遲放寬爆量門檻至0.4倍
+                # 💡 早盤開盤特赦機制
                 if passed_mins <= 45:
                     estimated_today_vol = today_total_vol * (270.0 / passed_mins)
                     if estimated_today_vol < (prior_high_vol * 0.4): return None
                 else:
                     estimated_today_vol = today_total_vol * (270.0 / passed_mins)
                     if estimated_today_vol < prior_high_vol: return None  
-            else:
-                pass
 
     stop_loss_price = round(min(prior_low, current_low), 2)
     risk_pct = round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)
@@ -214,7 +245,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         estimated_hour_vol = v_p * time_multiplier
         vol_mult = round(estimated_hour_vol / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
         
-        # 💡 早盤小時量比門檻調降至 0.4 倍，防止開盤量能急速遞減被誤殺
+        # 💡 早盤小時量比門檻調降至 0.4 倍
         threshold = 0.4 if current_minute <= 45 and current_hour == 9 else 0.8
         if vol_mult < threshold: return None
     else:
@@ -252,17 +283,26 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     }
 
 # ==========================================
-# 4. 多執行緒平行高效洗滌引擎
+# 4. 多執行緒平行高效洗滌引擎 (包含週K與日K下載與過濾)
 # ==========================================
-def download_day_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
+def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
     passed_day_stocks = {}
+    
+    # 擴充：一次下載日K與週K數據
     try:
         data_d = yf.download(chunk, period="45d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
+        data_w = yf.download(chunk, period="26wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True)
     except:
         return passed_day_stocks
 
     for ticker in chunk:
         try:
+            # 1. 檢查並執行 Stage 0: 週 K 線趨勢保護
+            if ticker not in data_w.columns.get_level_values(0): continue
+            df_stock_w = data_w[ticker].dropna(subset=["Close"])
+            if not stage0_weekly_filter(df_stock_w): continue  # 未站上週20MA直接淘汰
+            
+            # 2. 執行 Stage 1: 日 K 與流動性篩選
             if ticker not in data_d.columns.get_level_values(0): continue
             df_stock_d = data_d[ticker].dropna(subset=["Close"])
             if df_stock_d.empty: continue
@@ -276,7 +316,7 @@ def download_day_and_filter(chunk, stock_map, current_hour, current_minute, is_a
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達】...")
+    print("🚀 啟動【台股 666 精選雷達 v2.0】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -288,6 +328,16 @@ if __name__ == "__main__":
         print("🌙 自動切換至【精準盤後做功課模式】...")
     else:
         print("☀️ 自動開啟【即時極速獵殺模式】...")
+
+    # 🛠️ 修正 13:25 無法清除快取死循環問題：
+    # 改為在每日「早盤第一輪 (09:00 - 09:10)」執行時，自動強制重置快取檔案與持久化記憶
+    if current_hour == 9 and current_minute <= 10:
+        if os.path.exists(CACHE_FILE): 
+            os.remove(CACHE_FILE)
+            print("🧹 【早盤初始化】偵測到今日第一輪執行，已強制清空昨日舊快取 (scan_cache.csv)。")
+        if os.path.exists(MEMORY_FILE):
+            os.remove(MEMORY_FILE)
+            print("🧹 【早盤初始化】偵測到今日第一輪執行，已重置歷史連霸記憶庫 (stock_memory.csv)。")
 
     filter_status, filter_msg = check_market_filter_and_holiday()
         
@@ -304,18 +354,11 @@ if __name__ == "__main__":
         except:
             pass
 
-    memory_file = "stock_memory.csv"
-    if os.path.exists(memory_file):
-        try: df_mem = pd.read_csv(memory_file, dtype={"stock_id": str})
+    if os.path.exists(MEMORY_FILE):
+        try: df_mem = pd.read_csv(MEMORY_FILE, dtype={"stock_id": str})
         except: df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
     else:
         df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
-        
-    if current_hour >= 13 and current_minute >= 25:
-        df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
-        cache_dict = {}  
-        if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
-        print("🧹 已到收盤時間，清空暫存數據。")
 
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
@@ -327,7 +370,7 @@ if __name__ == "__main__":
     
     day_passed_pool = {}
     with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = {executor.submit(download_day_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
+        futures = {executor.submit(download_all_timeframes_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
         for future in as_completed(futures):
             chunk_res = future.result()
             if chunk_res:
@@ -449,7 +492,7 @@ if __name__ == "__main__":
                     
                 top_list.append(
                     f"🔥 <b>【核心特攻】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
-                    f" 📝 趨勢結構: <b>{row['道氏形態']}</b>\n"
+                    f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 20MA 保護機制)</b>\n"
                     f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
                     f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
                     f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
@@ -473,8 +516,8 @@ if __name__ == "__main__":
         if standard_list:
             send_tg_msg(f"📦 <b>【標準 666 續報尾包】</b>\n------------------------\n" + "\n".join(standard_list))
             
-        df_mem.to_csv(memory_file, index=False)
+        df_mem.to_csv(MEMORY_FILE, index=False)
     else:
-        if not os.path.exists(memory_file):
-            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(memory_file, index=False)
-        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、真突破且爆量」之標的。")
+        if not os.path.exists(MEMORY_FILE):
+            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(MEMORY_FILE, index=False)
+        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「週K大趨勢保護、底底高、真突破且爆量」之標的。")
