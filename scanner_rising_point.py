@@ -20,7 +20,7 @@ pd.set_option('display.unicode.east_asian_width', True)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 1000)
 
-# ⚠️ 請記得在這裡修改成您自己正確的 Telegram 金鑰與 ID
+# ⚠️ 請確認這是您正確的 Telegram 金鑰與 ID
 TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
 TELEGRAM_CHAT_ID = "5220963669"
 CACHE_FILE = "scan_cache.csv"  # 🧠 快取資料庫
@@ -107,7 +107,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
 
     if len(df_d) < 20: return None
         
-    # 歷史均量海選（看前5日均量）
+    # 歷史均量海選（看前5日均量，早盤未滿10點不含今日以防誤殺）
     historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
     if len(historical_vols) < 5 or historical_vols.mean() < 500000: return None
         
@@ -154,14 +154,13 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
             if today_total_vol < prior_high_vol: return None
         else:
             if 9 <= current_hour <= 13:
-                # ⏱️ 修正日K累積時間計算
                 passed_mins = (current_hour - 9) * 60 + current_minute
                 passed_mins = min(270.0, max(1.0, float(passed_mins)))
                 
-                # 💡 【特赦機制】：若在開盤前45分鐘(09:00~09:45)，由於yfinance成交量同步延遲，放寬日K爆量把關標準
+                # 💡 早盤開盤特赦機制：09:45前因延遲放寬爆量門檻至0.4倍
                 if passed_mins <= 45:
                     estimated_today_vol = today_total_vol * (270.0 / passed_mins)
-                    if estimated_today_vol < (prior_high_vol * 0.4): return None  # 降至0.4倍特赦防誤殺
+                    if estimated_today_vol < (prior_high_vol * 0.4): return None
                 else:
                     estimated_today_vol = today_total_vol * (270.0 / passed_mins)
                     if estimated_today_vol < prior_high_vol: return None  
@@ -197,34 +196,31 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     
     c_p, v_p = float(c_ser.iloc[-1]), float(v_ser.iloc[-1])
     
-    # 均線攔截
+    # 均線與布林通道攔截
     ma60 = c_ser.rolling(60).mean().iloc[-1]
     if pd.isna(ma60) or c_p < ma60: return None
     
-    # 布林攔截
     ma20 = c_ser.rolling(20).mean()
     std20 = c_ser.rolling(20).std()
     bb_middle = float(ma20.iloc[-1])
     if c_p < bb_middle: return None
     bb_upper = float((ma20 + 2 * std20).iloc[-1])
     
-    # 小時量比過濾
+    # 小時量比動態估算
     v_mean_20h = v_ser.tail(21).head(20).mean()
     if not is_after_market and (9 <= current_hour <= 13):
-        # ⏱️ 分鐘級動態小時量校準器
         passed_mins = max(1, current_minute)
         time_multiplier = 60.0 / passed_mins
         estimated_hour_vol = v_p * time_multiplier
         vol_mult = round(estimated_hour_vol / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
         
-        # 💡 【核心修正】：台股開盤前45分鐘內(09:00~09:45)，因開盤量大隨後遞減，動態預估公式會被嚴重低估
-        # 故在早盤前45分鐘，將量能過濾門檻放寬至 0.4 倍，全面攔截剛發動的黑馬股
+        # 💡 早盤小時量比門檻調降至 0.4 倍，防止開盤量能急速遞減被誤殺
         threshold = 0.4 if current_minute <= 45 and current_hour == 9 else 0.8
         if vol_mult < threshold: return None
     else:
         vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
 
-    # KD 運算
+    # KD 與 MACD 與 VR 指標運算
     low_min = l_ser.rolling(60).min()
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
@@ -233,13 +229,11 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     if kv < 60.0 or kv <= dv: return None
     
-    # MACD 運算
     ema12 = c_ser.ewm(span=12, adjust=False).mean()
     ema26 = c_ser.ewm(span=26, adjust=False).mean()
     macd_diff = float((ema12 - ema26 - (ema12 - ema26).ewm(span=9, adjust=False).mean()).iloc[-1])
     if macd_diff <= 0: return None
     
-    # VR 資金階梯運算
     chg = c_ser.diff()
     su = v_ser.where(chg > 0, 0).rolling(26).sum().iloc[-1]
     sd = v_ser.where(chg < 0, 0).rolling(26).sum().iloc[-1]
@@ -282,7 +276,7 @@ def download_day_and_filter(chunk, stock_map, current_hour, current_minute, is_a
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 × 早盤特赦動態優化版】...")
+    print("🚀 啟動【台股 666 精選雷達】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -291,9 +285,9 @@ if __name__ == "__main__":
     is_after_market = False
     if current_hour >= 14 or (now_dt.weekday() >= 5):
         is_after_market = True
-        print("🌙 偵測到目前為收盤時段，自動切換至【精準盤後做功課模式】...")
+        print("🌙 自動切換至【精準盤後做功課模式】...")
     else:
-        print("☀️ 偵測到目前為盤中時段，自動開啟【即時極速獵殺模式】...")
+        print("☀️ 自動開啟【即時極速獵殺模式】...")
 
     filter_status, filter_msg = check_market_filter_and_holiday()
         
@@ -321,18 +315,17 @@ if __name__ == "__main__":
         df_mem = pd.DataFrame(columns=["stock_id", "last_run", "total_count"])
         cache_dict = {}  
         if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
-        print("🧹 已到收盤時間，清空計分板與快取庫。")
+        print("🧹 已到收盤時間，清空暫存數據。")
 
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
     total_count = len(all_yf_codes)
     
-    # ------------------ 海選階段 ------------------
+    # 海選階段
     chunk_size = 40  
     chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, total_count, chunk_size)]
     
     day_passed_pool = {}
-    print(f"⚡ [階段一] 啟動日K與流動性海選... 監控總數: {total_count} 檔")
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = {executor.submit(download_day_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
         for future in as_completed(futures):
@@ -340,9 +333,7 @@ if __name__ == "__main__":
             if chunk_res:
                 day_passed_pool.update(chunk_res)
                 
-    print(f"📥 [海選結束] 1900檔成功精簡！共有 {len(day_passed_pool)} 檔標的通過日K與流動性漏斗。")
-    
-    # ------------------ 分K精選階段 ------------------
+    # 分K與快取比對階段
     results = []
     new_cache_rows = []
     
@@ -363,7 +354,6 @@ if __name__ == "__main__":
                     
                     if time_diff_mins < 40.0 and abs(current_now_p - cached_p) < 0.01:
                         if int(c_data["is_match"]) == 1:
-                            print(f"🧠 [快取命中-精選股] {sid} {stock_map[ticker]['sname']} 數據未變動，直接輸出標的。")
                             results.append({
                                 "代碼": sid, "名稱": stock_map[ticker]["sname"], "現價": cached_p, 
                                 "60MA位置": float(c_data["ma60"]), "布林上軌": float(c_data["bb_upper"]), 
@@ -372,9 +362,6 @@ if __name__ == "__main__":
                                 "VR值": str(c_data["vr_str"]), "score": float(c_data["score"]), "量比數字": float(c_data["vol_mult"]),
                                 "道氏形態": str(day_passed_pool[ticker]["道氏形態"]), "防守價": float(day_passed_pool[ticker]["防守價"]), "預估風險": str(day_passed_pool[ticker]["預估風險"])
                             })
-                        else:
-                            print(f"🧠 [快取過濾-冷門股] {sid} {stock_map[ticker]['sname']} 沒動靜，直接過濾跳過。")
-                        
                         new_cache_rows.append(c_data)
                         continue
                 except:
@@ -382,9 +369,7 @@ if __name__ == "__main__":
             uncached_tickers.append(ticker)
 
         if uncached_tickers:
-            print(f"⚡ [階段二] 僅對剩下的 {len(uncached_tickers)} 檔目標股下載分K進行深度驗證...")
             passed_chunks = [uncached_tickers[i:i + 20] for i in range(0, len(uncached_tickers), 20)]
-            
             for p_chunk in passed_chunks:
                 try:
                     data_60m = yf.download(p_chunk, period="30d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
@@ -413,9 +398,8 @@ if __name__ == "__main__":
                         new_cache_rows.append(cache_info)
 
                         if final_res:
-                            sname = stock_map[ticker]["sname"]
                             results.append({
-                                "代碼": sid, "名稱": sname, "現價": final_res["現價"], 
+                                "代碼": sid, "名稱": stock_map[ticker]["sname"], "現價": final_res["現價"], 
                                 "60MA位置": final_res["60MA位置"], "布林上軌": final_res["布林上軌"], 
                                 "60分K值": final_res["60分K值"], "60分D值": final_res["60分D值"],
                                 "MACD柱": final_res["MACD柱"], "小時量比": final_res["小時量比"], 
@@ -430,13 +414,9 @@ if __name__ == "__main__":
         else:
             pd.DataFrame(columns=["ticker","timestamp","現價","is_match","ma60","bb_upper","kv","dv","macd_diff","vol_str","vr_str","score","vol_mult"]).to_csv(CACHE_FILE, index=False)
                     
-    print(f"\n🔊 全能雷達雙層洗滌完畢，最終精選出 {len(results)} 檔黃金標的。")
-    
-    # ------------------ 推播與持久化儲存 ------------------
+    # 報告推播與記憶持久化
     if results:
-        df_report = pd.DataFrame(results)
-        df_report = df_report.sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
-        
+        df_report = pd.DataFrame(results).sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
         this_run_sids = set(df_report["代碼"].astype(str))
         last_run_sids = set(df_mem[df_mem["last_run"] == 1]["stock_id"].astype(str))
         
@@ -476,27 +456,18 @@ if __name__ == "__main__":
                     f" 🎯 <b>鐵血防守點: {row['防守價']} (預估風險潛在跌幅: {row['預估風險']})</b>\n"
                 )
         
-        if top_list:
-            send_tg_msg(header_msg + "\n".join(top_list))
+        if top_list: send_tg_msg(header_msg + "\n".join(top_list))
         
         standard_list = []
         for idx, row in df_report.iterrows():
             if idx >= 5:
                 sid_str = str(row['代碼'])
-                tag = ""
-                mem_row = df_mem[df_mem["stock_id"] == sid_str]
-                total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
-                
-                if total_seen >= 2 and total_seen >= top_threshold: tag = f" 🔥[連霸{total_seen}輪]"
-                elif sid_str not in last_run_sids and len(last_run_sids) > 0: tag = " 🆕[新進榜]"
-                    
                 standard_list.append(
                     f"🚨 <b>【標準666】{row['代碼']} {row['名稱']}</b>\n"
                     f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | 防守: {row['防守價']} ({row['預估風險']})"
                 )
                 if len(standard_list) == 15:
-                    send_tw_msg = f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list)
-                    send_tg_msg(send_tw_msg)
+                    send_tg_msg(f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list))
                     standard_list = []
                     time.sleep(0.5)
         if standard_list:
@@ -504,3 +475,6 @@ if __name__ == "__main__":
             
         df_mem.to_csv(memory_file, index=False)
     else:
+        if not os.path.exists(memory_file):
+            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(memory_file, index=False)
+        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「底底高、真突破且爆量」之標的。")
