@@ -10,51 +10,24 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# 100% 靜音令與忽略警告通知
+# 忽略警告
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 
-pd.set_option('display.unicode.ambiguous_as_wide', True)
-pd.set_option('display.unicode.east_asian_width', True)
-pd.set_option('display.max_columns', None)
-pd.set_option('display.width', 1000)
-
 # ==========================================
-# ⚙️ 頂層參數配置區
+# ⚙️ 參數設定
 # ==========================================
 TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
 TELEGRAM_CHAT_ID = "5220963669"
 CACHE_FILE = "scan_cache.csv"
 MEMORY_FILE = "stock_memory.csv"
 
-MARKET_MA_PERIOD = 20
-MARKET_DROP_THRESHOLD = 0.0
-WEEKLY_MA_PERIOD = 20
-
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try: 
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-    except Exception as e: 
-        print(f"❌ Telegram 網路連線失敗: {e}")
-
-# ==========================================
-# 0. 大盤風控
-# ==========================================
-def check_market_filter_and_holiday():
-    try:
-        market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
-        if not market_data_d.empty:
-            twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
-            two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
-            twii_ma = twii_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
-            twii_now = twii_close_d.iloc[-1]
-            twii_perf = ((twii_now - twii_ma) / twii_ma) * 100
-            if twii_perf < MARKET_DROP_THRESHOLD:
-                return "WARN", f"⚠️ <b>【盤勢波段轉弱】大盤跌破 {MARKET_MA_PERIOD}MA</b>"
     except: pass
-    return "OK", "🟢 <b>【多頭環境安全】</b>"
 
 # ==========================================
 # 1. 股票名單下載
@@ -79,63 +52,66 @@ def get_all_taiwan_stocks_official():
     return stock_dict
 
 # ==========================================
-# 1.5 週 K 保護
+# 2. 核心邏輯：Swing Low 防守搜尋器
 # ==========================================
-def stage0_weekly_filter(df_w):
-    if df_w.empty or len(df_w) < WEEKLY_MA_PERIOD: return False
-    w_close = df_w["Close"].squeeze().astype(float)
-    return w_close.iloc[-1] >= w_close.rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
-
-# ==========================================
-# 2. 日 K 核心：Swing Low 防守機制
-# ==========================================
-def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
-    if len(df_d) < 20: return None
-    df_d = df_d.bfill().ffill()
-    d_close, d_high, d_low, d_vol = df_d["Close"].squeeze().astype(float), df_d["High"].squeeze().astype(float), df_d["Low"].squeeze().astype(float), df_d["Volume"].squeeze().astype(float)
-    
-    current_now_price = d_close.iloc[-1]
-    prior_high = d_high.tail(20).head(15).max()
-    if current_now_price < (prior_high * 0.96): return None
-    
-    # Swing Low 防守機制
-    stop_loss_price = None
-    for i in range(len(d_low) - 3, 1, -1):
+def find_swing_low(d_low):
+    """從後往前尋找第一個 Swing Low"""
+    # 至少需要 5 根 K 線來確認一個完整的轉折
+    for i in range(len(d_low) - 3, 2, -1):
         if (d_low.iloc[i] < d_low.iloc[i-1] and d_low.iloc[i] < d_low.iloc[i-2] and
             d_low.iloc[i] < d_low.iloc[i+1] and d_low.iloc[i] < d_low.iloc[i+2]):
-            stop_loss_price = round(float(d_low.iloc[i]), 2)
-            break
-    
-    if stop_loss_price is None or stop_loss_price > current_now_price:
-        stop_loss_price = round(min(d_low.tail(20)), 2)
+            return float(d_low.iloc[i])
+    return float(d_low.tail(10).min()) # 若嚴格轉折找不到，退而求其次取 10 日最低
 
-    return {"現價": current_now_price, "道氏形態": "↗️ 轉折確認", "防守價": stop_loss_price, "預估風險": f"{round(((current_now_price - stop_loss_price) / current_now_price) * 100, 1)}%"}
-
-# ==========================================
-# 3. 分 K 策略
-# ==========================================
-def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market):
-    if len(df_60m) < 40: return None
-    df_60m = df_60m.bfill().ffill()
-    c_ser, v_ser = df_60m["Close"].squeeze().astype(float), df_60m["Volume"].squeeze().astype(float)
-    c_p = float(c_ser.iloc[-1])
+def stage1_day_filter(df_d):
+    if len(df_d) < 25: return None
+    df_d = df_d.bfill().ffill()
+    d_close = df_d["Close"].squeeze().astype(float)
+    d_low = df_d["Low"].squeeze().astype(float)
     
-    ma60 = c_ser.rolling(60).mean().iloc[-1]
-    if c_p < ma60: return None
+    current_now_price = d_close.iloc[-1]
+    
+    # 防守價計算：使用 Swing Low
+    stop_loss = find_swing_low(d_low)
+    
+    # 篩選門檻：現價與防守點差距不可過大 (風險過高不進)
+    if (current_now_price - stop_loss) / current_now_price > 0.15: return None
     
     return {
-        "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": 0.0,
-        "小時量比數字": 1.0, "小時量比": "1.0倍",
-        "60分K值": 70.0, "60分D值": 50.0, "MACD柱": 0.1,
-        "VR值": "120%", "score": 100,
-        "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"]
+        "現價": current_now_price,
+        "防守價": round(stop_loss, 2),
+        "風險": f"{round(((current_now_price - stop_loss) / current_now_price) * 100, 1)}%"
     }
 
 # ==========================================
-# 主執行程序
+# 3. 多執行緒引擎
 # ==========================================
+def process_stock(ticker, stock_info):
+    try:
+        df = yf.download(ticker, period="3mo", interval="1d", progress=False, auto_adjust=True)
+        if df.empty or len(df) < 20: return None
+        res = stage1_day_filter(df)
+        if res:
+            res["代碼"] = stock_info["sid"]
+            res["名稱"] = stock_info["sname"]
+            return res
+    except: return None
+    return None
+
 if __name__ == "__main__":
+    print("🚀 雷達啟動，正在掃描...")
     stock_map = get_all_taiwan_stocks_official()
-    all_yf_codes = list(stock_map.keys())
-    # ... (其餘邏輯與之前完全一致，確保執行流順暢)
-    print("🚀 雷達運作中...")
+    results = []
+    
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(process_stock, ticker, info): ticker for ticker, info in stock_map.items()}
+        for future in as_completed(futures):
+            res = future.result()
+            if res: results.append(res)
+    
+    if results:
+        df_res = pd.DataFrame(results).head(20) # 顯示前 20 檔
+        msg = "🔔 <b>【雷達精選訊號】</b>\n" + "\n".join([f"📈 {r['名稱']}({r['代碼']}) | 現價:{r['現價']} | 防守:{r['防守價']} | 風險:{r['風險']}" for _, r in df_res.iterrows()])
+        send_tg_msg(msg)
+    else:
+        print("ℹ️ 本次掃描無符合條件之標的。")
