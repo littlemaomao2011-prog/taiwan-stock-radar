@@ -35,7 +35,29 @@ MARKET_DROP_THRESHOLD = 0.0  # 跌破均線幾 % 啟動鐵血空倉令
 # 個股長線保護與 ATR 閥值
 WEEKLY_MA_PERIOD = 20        # 週 K 線趨勢保護天數 (預設週 20MA)
 ATR_PERIOD = 14              # ATR 計算標準天數
-ATR_MULTIPLIER = 0.5         # Pivot Low 往下減的 ATR 倍數 (第八個問題：0.5 ATR)
+ATR_MULTIPLIER = 0.5         # Pivot Low 往下減的 ATR 倍數
+
+# ==========================================
+# 📊 第九個問題：台股產業焦點熱度板塊設定 (Sector Heat Mapping)
+# ==========================================
+SECTOR_INDEXES = {
+    "0053.TW": "💻 電子高科技半導體群",
+    "0052.TW": "🔬 核心半導體/台積概念",
+    "0030.TW": "⚙️ 傳產大宗/機電/資產重電群",
+    "0055.TW": "🏦 金融保險/權值防禦群",
+    "0056.TW": "💰 高股息/成熟價值鏈",
+    "^TWII":   "🌍 加權大盤總主流",
+    "^TWO":    "⚡ 中小型櫃買瘋妖股"
+}
+
+# 台灣主要代碼前綴或族群對應
+def get_stock_sector_name(sid):
+    sid_num = int(sid) if sid.isdigit() else 0
+    if sid_num in [2330, 2454, 2303, 3711, 2379, 3034]: return "🔬 核心半導體/台積概念"
+    if 2300 <= sid_num <= 2499 or 3000 <= sid_num <= 3099 or 6100 <= sid_num <= 6299: return "💻 電子高科技半導體群"
+    if 1500 <= sid_num <= 1799 or 2000 <= sid_num <= 2199: return "⚙️ 傳產大宗/機電/資產重電群"
+    if 2800 <= sid_num <= 2899: return "🏦 金融保險/權值防禦群"
+    return "💰 高股息/成熟價值鏈"
 
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -43,6 +65,34 @@ def send_tg_msg(msg):
         requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
     except Exception as e: 
         print(f"❌ Telegram 網路連線失敗: {e}")
+
+# ==========================================
+# 🔥 下載並計算各產業板塊熱度狀態 (是否站在 5MA 之上)
+# ==========================================
+def get_sector_heat_status():
+    print("🔥 正在下載全市場核心板塊數據，計算熱度資金流向...")
+    heat_map = {}
+    try:
+        data = yf.download(list(SECTOR_INDEXES.keys()), period="15d", interval="1d", progress=False, auto_adjust=True)
+        for ticker, name in SECTOR_INDEXES.items():
+            if ticker in data["Close"].columns:
+                close_ser = data["Close"][ticker].dropna().astype(float)
+                if len(close_ser) >= 5:
+                    now_price = close_ser.iloc[-1]
+                    ma5 = close_ser.tail(5).mean()
+                    # True 代表站在 5MA 之上，屬於當下的市場焦點熱度產業
+                    heat_map[name] = {
+                        "is_hot": now_price >= ma5,
+                        "desc": "🔥 資金狂潮正熱 (站上5MA)" if now_price >= ma5 else "❄️ 缺乏熱度關注 (跌破5MA)"
+                    }
+    except Exception as e:
+        print(f"ℹ️ 產業熱度下載異常 ({e})，全數改為預設安全。")
+    
+    # 兜底保護
+    for name in SECTOR_INDEXES.values():
+        if name not in heat_map:
+            heat_map[name] = {"is_hot": True, "desc": "✨ 常規熱度放行"}
+    return heat_map
 
 # ==========================================
 # 0. 大盤風控與環境結構驗證
@@ -208,9 +258,8 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
                     if estimated_today_vol < prior_high_3d_avg_vol: return None  
 
     # ------------------------------------------------------------
-    # 📊 第八個問題優化：【ATR 波動度調校：Pivot Low - 0.5*ATR 防守機制】
+    # 📊 ATR 波動度調校：Pivot Low - 0.5*ATR 防守機制
     # ------------------------------------------------------------
-    # 1. 計算標準 ATR (Average True Range)
     prev_close = d_close.shift(1)
     tr1 = d_high - d_low
     tr2 = (d_high - prev_close).abs()
@@ -219,7 +268,6 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     atr_series = tr.rolling(ATR_PERIOD).mean()
     current_atr = float(atr_series.iloc[-1]) if not pd.isna(atr_series.iloc[-1]) else 0.0
 
-    # 2. 尋找基礎波段轉折 Pivot Low
     base_pivot_low = None
     for i in range(len(d_low) - 3, 1, -1):
         if (d_low.iloc[i] < d_low.iloc[i-1] and d_low.iloc[i] < d_low.iloc[i-2] and
@@ -230,10 +278,8 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     if base_pivot_low is None or base_pivot_low > current_now_price:
         base_pivot_low = float(min(prior_low, current_low))
 
-    # 3. 引進動能防震：停損價 = Pivot Low - 0.5 * ATR
     stop_loss_price = round(base_pivot_low - (ATR_MULTIPLIER * current_atr), 2)
     
-    # 安全兜底：防守價如果不小心扣到變負數或太誇張，強制守住基礎低點的 90%
     if stop_loss_price <= 0 or stop_loss_price > current_now_price:
         stop_loss_price = round(base_pivot_low * 0.95, 2)
 
@@ -290,7 +336,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     high_max = h_ser.rolling(60).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
     k_series = rsv.ewm(com=2, adjust=False).mean() 
-    d_series = d_series = k_series.ewm(com=2, adjust=False).mean()
+    d_series = k_series.ewm(com=2, adjust=False).mean()
     kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     if kv < 60.0 or kv <= dv: return None
     
@@ -346,7 +392,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks
 
 if __name__ == "__main__":
-    print("🚀 啟動【台股 666 精選雷達 v2.7 ATR波動防禦版】...")
+    print("🚀 啟動【台股 666 精選雷達 v2.8 產業焦點熱度版】...")
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -374,6 +420,9 @@ if __name__ == "__main__":
         send_tg_msg(f"🔔 <b>【台股 666 精選回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 風控鎖倉！")
         exit(0)
         
+    # 📊 獲取當前全市場焦點產業板塊熱度
+    sector_heat_map = get_sector_heat_status()
+
     cache_dict = {}
     if os.path.exists(CACHE_FILE):
         try:
@@ -488,6 +537,7 @@ if __name__ == "__main__":
                     
     if results:
         df_report = pd.DataFrame(results).sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
+        
         this_run_sids = set(df_report["代碼"].astype(str))
         last_run_sids = set(df_mem[df_mem["last_run"] == 1]["stock_id"].astype(str))
         
@@ -505,47 +555,6 @@ if __name__ == "__main__":
         
         mode_title = "⚖️ 終極盤後選股" if is_after_market else "⚡ 盤中動態特攻"
         header_msg = f"🔔 <b>【台股 666 {mode_title}戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n"
+        
         top_list = []
-        
-        for idx, row in df_report.iterrows():
-            if idx < 5:
-                sid_str = str(row['代碼'])
-                tag = ""
-                mem_row = df_mem[df_mem["stock_id"] == sid_str]
-                total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
-                
-                if total_seen >= 2 and total_seen >= top_threshold: tag = f" 🔥【連霸 {total_seen} 輪】"
-                elif sid_str not in last_run_sids and len(last_run_sids) > 0: tag = " 🆕【全新進榜】"
-                elif len(last_run_sids) == 0: tag = " 🚀【雷達初次偵測】"
-                    
-                top_list.append(
-                    f"🔥 <b>【核心特攻】★ {row['代碼']} {row['名稱']} ★</b>{tag}\n"
-                    f" 📝 趨勢結構: <b>{row['道氏形態']} (已通過週線 {WEEKLY_MA_PERIOD}MA 保護)</b>\n"
-                    f" 📈 現價: {row['現價']} (60MA: {row['60MA位置']} | 上軌: {row['布林上軌']})\n"
-                    f" ⚡ 當前小時量比: <b>{row['小時量比']}</b> | VR值: <b>{row['VR值']}</b>\n"
-                    f" 📊 KD值: K {row['60分K值']} > D {row['60分D值']} | MACD柱: {row['MACD柱']}\n"
-                    f" 🎯 <b>鐵血動態防守點: {row['防守價']} (Pivot - 0.5ATR，預估風險潛在跌幅: {row['預估風險']})</b>\n"
-                )
-        
-        if top_list: send_tg_msg(header_msg + "\n".join(top_list))
-        
         standard_list = []
-        for idx, row in df_report.iterrows():
-            if idx >= 5:
-                sid_str = str(row['代碼'])
-                standard_list.append(
-                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']}</b>\n"
-                    f" ➔ 價: {row['現價']} | 量比: {row['小時量比']} | 防守: {row['防守價']} ({row['預估風險']})"
-                )
-                if len(standard_list) == 15:
-                    send_tg_msg(f"📦 <b>【標準 666 續報波段】</b>\n------------------------\n" + "\n".join(standard_list))
-                    standard_list = []
-                    time.sleep(0.5)
-        if standard_list:
-            send_tg_msg(f"📦 <b>【標準 666 續報尾包】</b>\n------------------------\n" + "\n".join(standard_list))
-            
-        df_mem.to_csv(MEMORY_FILE, index=False)
-    else:
-        if not os.path.exists(MEMORY_FILE):
-            pd.DataFrame(columns=["stock_id", "last_run", "total_count"]).to_csv(MEMORY_FILE, index=False)
-        send_tg_msg(f"🔔 <b>【台股 666 精選戰報】</b>\n⏰ 時間：{now}\n🌐 風控：{filter_msg}\n------------------------\n❌ 目前市場無符合「週K大趨勢保護、底底高、3日平滑真突破且爆量、符合ATR安全邊際」之標的。")
