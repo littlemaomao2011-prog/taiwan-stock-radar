@@ -1,75 +1,37 @@
-name: Taiwan Stock 666 Scanner
-
-on:
-  schedule:
-    - cron: '5 1 * * 1-5'   # 09:05
-    - cron: '30 1 * * 1-5'  # 09:30
-    - cron: '50 1 * * 1-5'  # 09:50
-    - cron: '15 2 * * 1-5'  # 10:15
-    - cron: '35 2 * * 1-5'  # 10:35
-    - cron: '0 3 * * 1-5'   # 11:00
-    - cron: '30 3 * * 1-5'  # 11:30
-    - cron: '0 4 * * 1-5'   # 12:00
-    - cron: '30 4 * * 1-5'  # 12:30
-    - cron: '0 5 * * 1-5'   # 13:00
-    - cron: '20 5 * * 1-5'  # 13:20
-  workflow_dispatch:        
-
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write       
-
-    steps:
-    # 💡 核心優化 1：Checkout 時 fetch-depth 設為 0 (完整歷史)，避免淺層複製導致 rebase 失敗
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        persist-credentials: true 
-        fetch-depth: 0
-
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip'
-
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install yfinance pandas numpy requests lxml openpyxl
-
-    - name: Run scanner
-      env:
-        PYTHONUNBUFFERED: "1"
-      run: python scanner_rising_point.py
-
-    - name: Commit and Push memory changes
+- name: Commit and Push memory changes
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # 防呆機制
-        if [ ! -f stock_memory.csv ]; then
-          echo "stock_id,last_run,total_count" > stock_memory.csv
-        fi
+        # 1. 先把 Python 跑出來的最新數據改名備份，避免被蓋掉
+        [ -f stock_memory.csv ] && mv stock_memory.csv stock_memory_new.csv
+        [ -f scan_cache.csv ] && mv scan_cache.csv scan_cache_new.csv
         
-        # 檢查是否有檔案變動
+        # 2. 強制把遠端 GitHub 的檔案拉回來，讓 Git 軌道絕對保持一致
+        git fetch origin main
+        git checkout origin/main -- stock_memory.csv scan_cache.csv || true
+        
+        # 3. 融合新舊數據（如果遠端有就用新的覆蓋，如果遠端沒有就建立）
+        [ -f stock_memory_new.csv ] && mv stock_memory_new.csv stock_memory.csv
+        [ -f scan_cache_new.csv ] && mv scan_cache_new.csv scan_cache.csv
+        
+        # 4. 提交並使用常規的 Push（不帶 -f，保證符合分支保護規則）
         if git status --porcelain | grep -qE "stock_memory.csv|scan_cache.csv"; then
-          # 💡 核心優化 2：先把資料暫存起來，強行同步遠端最新進度
-          git stash || true
-          git pull --rebase origin main
-          git stash pop || true
-          
-          # 重新加回並提交
           git add stock_memory.csv scan_cache.csv
           git commit -m "🔄 自動更新盤中雷達記憶庫與快取數據 [Skip CI]"
           
-          # 💡 核心優化 3：使用強制推播（-f），並附帶 || true 雙層保險
-          echo "🚀 正在強制同步最新雷達數據至 GitHub..."
-          git push -f origin main || true
-          echo "✅ 數據同步程序執行完畢！"
+          # 循環重試常規 Push
+          for i in {1..5}; do
+            echo "正在安全同步雷達數據 (第 $i 次)..."
+            if git push origin main; then
+              echo "✅ 數據已成功安全寫入 GitHub！"
+              exit 0
+            fi
+            echo "⚠️ 同步撞車，等待 3 秒後重試..."
+            sleep 3
+            git fetch origin main
+            git merge origin/main -m "Merge remote" || true
+          done
         else
-          echo "✨ 記憶庫與快取數據無任何變動，跳過推送。"
+          echo "✨ 數據無變動，跳過推送。"
         fi
