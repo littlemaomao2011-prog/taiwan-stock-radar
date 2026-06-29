@@ -123,20 +123,21 @@ def check_market_filter_and_holiday():
     except:
         pass
         
-    # 💡 第三道防線：熔斷保底防禦機制 (如果全部掛掉，絕不給0分，一律給50分中性值放行)
+    # 💡 第三道防線：熔斷保底機制
     breadth_bar = make_progress_bar(50, 100, 8)
     return "OK", f"🟢 大盤智能環境模擬 ➔ 穩定守護放行\n📊 市場多空情緒：[{breadth_bar}] 50分", 0.0, 50
 
-def get_sector_heat_status():
+def get_sector_heat_status(base_score=50):
     heat_map = {}
     tickers = list(SECTOR_INDEXES.keys())
     try:
         data = yf.download(tickers, period="40d", interval="1d", progress=False, auto_adjust=True)
-        # 核心防禦：如果 yfinance 回傳空值，立刻啟動保底中性分數，不讓它變冰凍
-        if data.empty:
+        
+        # 💥 核心防線升級：如果 yfinance 下載回來完全為空，或者是滿滿的 NaN 空數據 (流量受限)
+        if data.empty or data.isnull().all().all():
             for name in SECTOR_INDEXES.values():
-                p_bar = make_progress_bar(50, 100, 8)
-                heat_map[name] = {"score": 50, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] (50分)"}
+                p_bar = make_progress_bar(base_score, 100, 8)
+                heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
             return heat_map
 
         for t in tickers:
@@ -154,53 +155,55 @@ def get_sector_heat_status():
                 else:
                     df_s = data.dropna() if len(tickers) == 1 else pd.DataFrame()
                 
-                if not df_s.empty and len(df_s) >= 20:
-                    c_p = float(df_s["Close"].iloc[-1])
-                    o_p = float(df_s["Open"].iloc[-1])
-                    h_p = float(df_s["High"].iloc[-1])
-                    v_p = float(df_s["Volume"].iloc[-1])
-                    
-                    pct = ((c_p - o_p) / o_p) * 100
-                    ma5 = df_s["Close"].tail(5).mean()
-                    ma10 = df_s["Close"].tail(10).mean()
-                    v_ma5 = df_s["Volume"].iloc[:-1].tail(5).mean()
-                    high_20d = df_s["High"].iloc[:-1].tail(20).max()
-                    
-                    h_score = 0
-                    if pct >= 2.0: h_score += 30
-                    elif pct >= 0.5: h_score += 15
-                    elif pct > 0: h_score += 5
-                    
-                    if c_p >= ma5 and ma5 >= ma10: h_score += 30
-                    elif c_p >= ma5: h_score += 15
-                    
-                    if v_ma5 > 0:
-                        v_ratio = v_p / v_ma5
-                        if v_ratio >= 1.5: h_score += 20
-                        elif v_ratio >= 1.0: h_score += 10
-                    
-                    if h_p >= high_20d: h_score += 20
-                    
-                    p_bar = make_progress_bar(h_score, 100, 8)
-                    if h_score >= 75: desc = f"💥超級狂熱 [{p_bar}] ({h_score}分)"
-                    elif h_score >= 50: desc = f"🔥主力聚焦 [{p_bar}] ({h_score}分)"
-                    elif h_score >= 25: desc = f"⛅溫和收納 [{p_bar}] ({h_score}分)"
-                    else: desc = f"❄️極度冰凍 [{p_bar}] ({h_score}分)"
-                    
-                    heat_map[name] = {"score": h_score, "is_hot": h_score >= 50, "desc": desc}
-                else:
-                    p_bar = make_progress_bar(50, 100, 8)
-                    heat_map[name] = {"score": 50, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] (50分)"}
+                # 💥 如果單一個股沒切出資料，也必須補中性底分
+                if df_s.empty or len(df_s) < 20 or df_s["Close"].isnull().all():
+                    p_bar = make_progress_bar(base_score, 100, 8)
+                    heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
+                    continue
+                
+                c_p = float(df_s["Close"].iloc[-1])
+                o_p = float(df_s["Open"].iloc[-1])
+                h_p = float(df_s["High"].iloc[-1])
+                v_p = float(df_s["Volume"].iloc[-1])
+                
+                pct = ((c_p - o_p) / o_p) * 100
+                ma5 = df_s["Close"].tail(5).mean()
+                ma10 = df_s["Close"].tail(10).mean()
+                v_ma5 = df_s["Volume"].iloc[:-1].tail(5).mean()
+                high_20d = df_s["High"].iloc[:-1].tail(20).max()
+                
+                h_score = 0
+                if pct >= 2.0: h_score += 30
+                elif pct >= 0.5: h_score += 15
+                elif pct > 0: h_score += 5
+                
+                if c_p >= ma5 and ma5 >= ma10: h_score += 30
+                elif c_p >= ma5: h_score += 15
+                
+                if v_ma5 > 0:
+                    v_ratio = v_p / v_ma5
+                    if v_ratio >= 1.5: h_score += 20
+                    elif v_ratio >= 1.0: h_score += 10
+                
+                if h_p >= high_20d: h_score += 20
+                
+                p_bar = make_progress_bar(h_score, 100, 8)
+                if h_score >= 75: desc = f"💥超級狂熱 [{p_bar}] ({h_score}分)"
+                elif h_score >= 50: desc = f"🔥主力聚焦 [{p_bar}] ({h_score}分)"
+                elif h_score >= 25: desc = f"⛅溫和收納 [{p_bar}] ({h_score}分)"
+                else: desc = f"❄️極度冰凍 [{p_bar}] ({h_score}分)"
+                
+                heat_map[name] = {"score": h_score, "is_hot": h_score >= 50, "desc": desc}
             except:
-                p_bar = make_progress_bar(50, 100, 8)
-                heat_map[name] = {"score": 50, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] (50分)"}
+                p_bar = make_progress_bar(base_score, 100, 8)
+                heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
     except Exception as e:
         print(f"ℹ️ 產業熱度下載異常 ({e})")
     
     for name in SECTOR_INDEXES.values():
         if name not in heat_map:
-            p_bar = make_progress_bar(50, 100, 8)
-            heat_map[name] = {"score": 50, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] (50分)"}
+            p_bar = make_progress_bar(base_score, 100, 8)
+            heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
     return heat_map
 
 def get_all_taiwan_stocks_official():
@@ -403,7 +406,9 @@ if __name__ == "__main__":
     is_after_market = current_hour >= 14 or (now_dt.weekday() >= 5)
 
     filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
-    sector_heat_map = get_sector_heat_status()
+    
+    # 💥 將大盤的多空分數 (例如 50分) 傳入板塊熱度作為下載失敗時的保底基本分
+    sector_heat_map = get_sector_heat_status(base_score=market_breadth_score)
 
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
@@ -432,10 +437,10 @@ if __name__ == "__main__":
                         sector_name = get_stock_sector_name(sid)
                         
                         match_ticker = next((k for k, v in SECTOR_INDEXES.items() if v == sector_name), None)
-                        sector_info = sector_heat_map.get(sector_name if not match_ticker else sector_name, {"score": 50, "is_hot": True, "desc": "✨ 溫和放行 (50分)"})
+                        sector_info = sector_heat_map.get(sector_name if not match_ticker else sector_name, {"score": market_breadth_score, "is_hot": True, "desc": f"✨ 溫和收納 ({market_breadth_score}分)"})
                         
                         if sector_name == "🌍 加權大盤總主流":
-                            sector_info = sector_heat_map.get("🔬 核心半導體/台積概念", {"score": 50, "is_hot": True, "desc": "✨ 溫和放行 (50分)"})
+                            sector_info = sector_heat_map.get("🔬 核心半導體/台積概念", {"score": market_breadth_score, "is_hot": True, "desc": f"✨ 溫和收納 ({market_breadth_score}分)"})
                         
                         final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct)
                         if final_res:
@@ -457,9 +462,9 @@ if __name__ == "__main__":
         top_list = []
         for idx, row in df_report.head(10).iterrows():
             sector_name = get_stock_sector_name(str(row['代碼']))
-            sector_info = sector_heat_map.get(sector_name, {"desc": "✨ 溫和放行 (50分)"})
+            sector_info = sector_heat_map.get(sector_name, {"desc": f"⛅溫和收納 ({market_breadth_score}分)"})
             if sector_name == "🌍 加權大盤總主流":
-                sector_info = sector_heat_map.get("🔬 核心半導體/台積概念", {"desc": "✨ 溫和放行 (50分)"})
+                sector_info = sector_heat_map.get("🔬 核心半導體/台積概念", {"desc": f"⛅溫和收納 ({market_breadth_score}分)"})
                 
             score_bar = make_progress_bar(row['score'], 100, 10)
             star_tag = get_score_star_tag(row['score'])
