@@ -133,7 +133,7 @@ def get_sector_heat_status(base_score=50):
     try:
         data = yf.download(tickers, period="40d", interval="1d", progress=False, auto_adjust=True)
         
-        # 💥 核心防線升級：如果 yfinance 下載回來完全為空，或者是滿滿的 NaN 空數據 (流量受限)
+        # 💥 核心防線：若下載回來完全為空，或者滿滿都是 NaN (Yahoo 流量受限時)，自動補上大盤底分保底
         if data.empty or data.isnull().all().all():
             for name in SECTOR_INDEXES.values():
                 p_bar = make_progress_bar(base_score, 100, 8)
@@ -155,7 +155,7 @@ def get_sector_heat_status(base_score=50):
                 else:
                     df_s = data.dropna() if len(tickers) == 1 else pd.DataFrame()
                 
-                # 💥 如果單一個股沒切出資料，也必須補中性底分
+                # 如果單一個股切出空值，補上保底中性分數
                 if df_s.empty or len(df_s) < 20 or df_s["Close"].isnull().all():
                     p_bar = make_progress_bar(base_score, 100, 8)
                     heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
@@ -407,7 +407,7 @@ if __name__ == "__main__":
 
     filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
     
-    # 💥 將大盤的多空分數 (例如 50分) 傳入板塊熱度作為下載失敗時的保底基本分
+    # 將大盤情緒分數傳入，作為 yfinance 被鎖 IP 時的板塊基本分
     sector_heat_map = get_sector_heat_status(base_score=market_breadth_score)
 
     stock_map = get_all_taiwan_stocks_official()
