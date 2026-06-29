@@ -61,10 +61,29 @@ def get_stock_sector_name(sid):
     if 2800 <= sid_num <= 2899: return "🏦 金融保險/權值防禦群"
     return "🌍 加權大盤總主流"
 
+def make_progress_bar(score, max_score=100, total_blocks=10):
+    """生成視覺化進度條工具"""
+    try:
+        filled_blocks = int(round((score / max_score) * total_blocks))
+        filled_blocks = max(0, min(total_blocks, filled_blocks))
+        empty_blocks = total_blocks - filled_blocks
+        return "█" * filled_blocks + "░" * empty_blocks
+    except:
+        return "░" * total_blocks
+
+def get_score_star_tag(score):
+    """根據分數給予星星等級"""
+    if score >= 85: return "⭐⭐⭐⭐⭐ [頂級主升]"
+    if score >= 75: return "⭐⭐⭐⭐ [強勢聚焦]"
+    if score >= 65: return "⭐⭐⭐ [動能穩健]"
+    return "⭐⭐ [潛力觀察]"
+
 def send_tg_msg(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try: 
-        requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
+        if res.status_code != 200:
+            print(f"❌ Telegram 伺服器拒絕發送，錯誤代碼: {res.status_code}，回應內容: {res.text}")
     except Exception as e: 
         print(f"❌ Telegram 網路連線失敗: {e}")
 
@@ -119,10 +138,11 @@ def get_sector_heat_status():
                     
                     if h_p >= high_20d: h_score += 20
                     
-                    if h_score >= 75: desc = f"💥超級狂熱 ({h_score}分)"
-                    elif h_score >= 50: desc = f"🔥主力聚焦 ({h_score}分)"
-                    elif h_score >= 25: desc = f"⛅溫和收納 ({h_score}分)"
-                    else: desc = f"❄️極度冰凍 ({h_score}分)"
+                    p_bar = make_progress_bar(h_score, 100, 8)
+                    if h_score >= 75: desc = f"💥超級狂熱 [{p_bar}] ({h_score}分)"
+                    elif h_score >= 50: desc = f"🔥主力聚焦 [{p_bar}] ({h_score}分)"
+                    elif h_score >= 25: desc = f"⛅溫和收納 [{p_bar}] ({h_score}分)"
+                    else: desc = f"❄️極度冰凍 [{p_bar}] ({h_score}分)"
                     
                     heat_map[name] = {"score": h_score, "is_hot": h_score >= 50, "desc": desc}
                 else:
@@ -138,25 +158,35 @@ def get_sector_heat_status():
     return heat_map
 
 # ==========================================
-# 0. 大盤風控與環境結構驗證
+# 0. 大盤風控與環境結構驗證 (融入多空情緒指標)
 # ==========================================
 def check_market_filter_and_holiday():
     print(f"🌍 正在下載大盤數據並驗證環境結構 (風控參數: {MARKET_MA_PERIOD}MA)...")
-    market_pct = 0.0
+    market_today_pct = 0.0
+    market_breadth_score = 50 # 預設中性情緒
     try:
-        market_data_d = yf.download(["^TWII", "^TWO"], period="60d", interval="1d", progress=False, auto_adjust=True)
+        market_data_d = yf.download(["^TWII", "^TWO", "0050.TW", "0056.TW"], period="60d", interval="1d", progress=False, auto_adjust=True)
         if not market_data_d.empty:
             if isinstance(market_data_d['Close'], pd.DataFrame):
                 twii_close_d = market_data_d["Close"]["^TWII"].dropna().astype(float)
                 two_close_d = market_data_d["Close"]["^TWO"].dropna().astype(float)
                 twii_open_d = market_data_d["Open"]["^TWII"].dropna().astype(float)
+                
+                # 簡易騰落多空情緒計算：利用四大核心權值/指數今日漲跌家數比
+                up_count = 0
+                for tk in ["^TWII", "^TWO", "0050.TW", "0056.TW"]:
+                    if tk in market_data_d["Close"].columns:
+                        c_today = market_data_d["Close"][tk].iloc[-1]
+                        o_today = market_data_d["Open"][tk].iloc[-1]
+                        if c_today > o_today: up_count += 1
+                market_breadth_score = int((up_count / 4) * 100)
             else:
                 twii_close_d = market_data_d["Close"].dropna().astype(float)
                 two_close_d = market_data_d["Close"].dropna().astype(float)
                 twii_open_d = market_data_d["Open"].dropna().astype(float)
             
             if not twii_close_d.empty and not twii_open_d.empty:
-                market_pct = ((twii_close_d.iloc[-1] - twii_open_d.iloc[-1]) / twii_open_d.iloc[-1]) * 100
+                market_today_pct = ((twii_close_d.iloc[-1] - twii_open_d.iloc[-1]) / twii_open_d.iloc[-1]) * 100
             
             if len(twii_close_d) >= MARKET_MA_PERIOD and len(two_close_d) >= MARKET_MA_PERIOD:
                 twii_ma = twii_close_d.rolling(MARKET_MA_PERIOD).mean().iloc[-1]
@@ -167,19 +197,22 @@ def check_market_filter_and_holiday():
                 twii_perf = ((twii_now_d - twii_ma) / twii_ma) * 100
                 two_perf = ((two_now_d - two_ma) / two_ma) * 100
                 
+                breadth_bar = make_progress_bar(market_breadth_score, 100, 8)
+                breadth_desc = f"\n📊 市場多空情緒：[{breadth_bar}] {market_breadth_score}分 (得分低於25分將自動提高個股過濾門檻)"
+                
                 if twii_perf < MARKET_DROP_THRESHOLD and two_perf < MARKET_DROP_THRESHOLD:
-                    return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！", market_pct
+                    return "LOCK", f"🔴 大盤({twii_perf:.2f}%)與櫃買({two_perf:.2f}%)雙破日{MARKET_MA_PERIOD}MA！" + breadth_desc, market_today_pct, market_breadth_score
                 elif twii_perf < MARKET_DROP_THRESHOLD or two_perf < MARKET_DROP_THRESHOLD:
                     weak_target = "大盤" if twii_perf < MARKET_DROP_THRESHOLD else "櫃買"
-                    return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！", market_pct
+                    return "WARN", f"⚠️ {weak_target}已跌破日{MARKET_MA_PERIOD}MA！" + breadth_desc, market_today_pct, market_breadth_score
                 else:
-                    return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上", market_pct
+                    return "OK", f"🟢 大盤/櫃買穩守日{MARKET_MA_PERIOD}MA之上" + breadth_desc, market_today_pct, market_breadth_score
     except Exception as e:
         print(f"ℹ️ 大盤下載異常 ({e})，自動切換至常規放行。")
-    return "OK", "🟢 大盤連線受阻，常規放行", market_pct
+    return "OK", "🟢 大盤連線受阻，常規放行", market_today_pct, market_breadth_score
 
 # ==========================================
-# 1. 防阻擋、全功能台股名單下載引擎
+# 1. 全功能台股名單下載引擎
 # ==========================================
 def get_all_taiwan_stocks_official():
     stock_dict = {}
@@ -337,7 +370,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
         "防守價": stop_loss_price, "預估風險": f"{risk_pct}%", "今日漲幅": f"{today_pct:+.1f}%"
     }
 
-def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_info, market_today_pct):
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_market, sector_info, market_today_pct, market_breadth_score):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols): return None
     df_60m = df_60m.bfill().ffill()
@@ -403,9 +436,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     if vr26 < 100.0: return None
     vr_trend = "↗️" if vr26 >= vr26_prev else "↘️"
     
-    # ==========================================
     # 🧮 100分精密評分大腦
-    # ==========================================
     score = 0
     if day_res["道氏形態"] == "今日突破 ↗️": score += 25
     else: score += 15
@@ -438,6 +469,10 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     elif sector_score >= 50: score += 4    
     elif sector_score >= 25: score += 2    
     else: score += 0                       
+    
+    # 【情緒指標風控補丁】大盤多空情緒極差時 (得分<=25)，進行動態過濾防禦，若個股分數不夠高則直接淘汰
+    if market_breadth_score <= 25 and score < 70:
+        return None
     
     return {
         "現價": round(c_p, 2), "60MA位置": round(ma60, 2), "布林上軌": round(bb_upper, 2),
@@ -485,6 +520,10 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
 
 if __name__ == "__main__":
     print("🚀 啟動【台股 666 精選雷達 v3.6 Heat Score 終極融合版】...")
+    
+    # 💥 【連線測試核心補丁】強制在啟動時發送一則驗證訊息
+    send_tg_msg("⚡ <b>【系統啟動測試】</b> 台股 666 雷達已成功連線！正在下載全市場大盤與個股數據...")
+    
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now = now_dt.strftime("%Y-%m-%d %H:%M")
@@ -498,7 +537,7 @@ if __name__ == "__main__":
         if os.path.exists(CACHE_FILE): os.remove(CACHE_FILE)
         if os.path.exists(MEMORY_FILE): os.remove(MEMORY_FILE)
 
-    filter_status, filter_msg, market_today_pct = check_market_filter_and_holiday()
+    filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
     if filter_status == "LOCK":
         send_tg_msg(f"🔔 <b>【台股 666 風控回報】</b>\n⏰ 時間：{now}\n------------------------\n{filter_msg}\n➔ 鐵血空倉鎖倉！")
         exit(0)
@@ -591,7 +630,7 @@ if __name__ == "__main__":
                         sector_name = get_stock_sector_name(sid)
                         sector_info = sector_heat_map.get(sector_name, {"score": 50, "is_hot": True, "desc": "✨"})
                         
-                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct)
+                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_after_market, sector_info, market_today_pct, market_breadth_score)
                         
                         if final_res:
                             cache_info = {
@@ -645,10 +684,15 @@ if __name__ == "__main__":
             total_seen = int(mem_row["total_count"].values[0]) if not mem_row.empty else 1
             if total_seen >= 2: tag = f"🔥【連霸 {total_seen} 輪】"
                 
+            star_tag = get_score_star_tag(row['score'])
+            score_bar = make_progress_bar(row['score'], 100, 10)
+            
             if len(top_list) < 5:
                 top_list.append(
-                    f"⭐ <b>{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> {tag}\n"
-                    f" ➔ 板塊: {sector_name} (<b>{sector_info['desc']}</b>)\n"
+                    f"⭐ <b>{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b>\n"
+                    f" ➔ 評級: <code>[{score_bar}]</code> {star_tag} {tag}\n"
+                    f" ➔ 板塊: {sector_name}\n"
+                    f" ➔ 熱度: <b>{sector_info['desc']}</b>\n"
                     f" ➔ 價格: <b>{row['現價']}</b> (今日漲幅: <b>{row['今日漲幅']}</b>)\n"
                     f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
                     f" ➔ 指標: KD <b>{row['KD趨勢']}</b>\n"
@@ -657,8 +701,9 @@ if __name__ == "__main__":
                 )
             else:
                 standard_list.append(
-                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b> ➔ {sector_info['desc']}\n"
-                    f" ➔ 價: {row['現價']} ({row['今日漲幅']}) | 量比: {row['小時量比']} | VR: {row['VR趨勢']} | KD: {row['KD趨勢']} | 距上軌: {row['距離上軌']} | 守: {row['防守價']} ({row['預估風險']})"
+                    f"🚨 <b>【標準666】{row['代碼']} {row['名稱']} ({int(row['score'])}分)</b>\n"
+                    f" ➔ 狀態: {star_tag} | {sector_info['desc']}\n"
+                    f" ➔ 數據: 價 {row['現價']} ({row['今日漲幅']}) | 量比: {row['小時量比']} | VR: {row['VR趨勢']} | KD: {row['KD趨勢']} | 守: {row['防守價']} ({row['預估風險']})"
                 )
         
         if top_list: send_tg_msg(header_msg + "\n".join(top_list))
