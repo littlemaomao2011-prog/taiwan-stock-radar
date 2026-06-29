@@ -2,65 +2,56 @@ name: Taiwan Stock Radar System
 
 on:
   schedule:
-    # 💡 預設排程：台股交易日（週一至週五）
-    # 盤中特攻：國際時間 01:35 (台北時間 09:35)
-    # 盤後選股：國際時間 06:35 (台北時間 14:35)
-    - cron: '35 1,6 * * 1-5'
-  workflow_dispatch: # 允許隨時在 GitHub 網頁上手動點擊「Run workflow」觸發
+    # 💡 避開整點與半點的全球流量尖峰，改成冷門的奇數分鐘，大幅縮短排隊時間！
+    # 1. 盤前熱身防線 (台北時間 08:42 / 國際時間 00:42)
+    - cron: '42 0 * * 1-5'
+    
+    # 2. 盤中特攻主線 (台北時間 09:22 / 國際時間 01:22) - 提早抓出早上衝出來的飆股
+    - cron: '22 1 * * 1-5'
+    
+    # 3. 盤中保險防線 (台北時間 10:13 / 國際時間 02:13) - 萬一 09:22 嚴重延遲，這條會補發
+    - cron: '13 2 * * 1-5'
+    
+    # 4. 盤後選股主線 (台北時間 14:42 / 國際時間 06:42)
+    - cron: '42 6 * * 1-5'
+    
+  workflow_dispatch: # 保持手動執行按鈕
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
-    
-    # ✨ 核心權限補丁：強制賦予虛擬機具有 Git Push 回寫儲存庫的權限
-    permissions:
-      contents: write
-
     steps:
-    - name: 📥 複製儲存庫代碼 (Checkout)
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-    - name: 🐍 初始化 Python 環境
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
 
-    - name: 🛠️ 自動下載並編譯安裝 TA-Lib C 語言核心與套件
-      run: |
-        python -m pip install --upgrade pip
-        
-        echo "⏳ 正在下載 TA-Lib 核心 C 語言原始碼..."
-        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-        tar -xzf ta-lib-0.4.0-src.tar.gz
-        
-        echo "⏳ 開始編譯 TA-Lib 底層函式庫 (此步驟約需 30 秒)..."
-        cd ta-lib/
-        ./configure --prefix=/usr
-        make
-        sudo make install
-        
-        echo "✨ TA-Lib 底層 C 庫安裝成功，清理環境..."
-        cd ..
-        rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
-        
-        echo "⏳ 開始安裝 Python 依賴套件與 TA-Lib 封裝層..."
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install TA-Lib
+      - name: Install C Library TA-Lib
+        run: |
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr
+          make
+          sudo make install
+          cd ..
+          rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-    - name: 🚀 執行台股 666 精選雷達
-      run: python scanner_rising_point.py
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install TA-Lib numpy==1.23.5 pandas yfinance requests lxml beautifulsoup4 html5lib
 
-    - name: 🔄 自動回寫快取與連霸記憶庫至 GitHub (Commit & Push)
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "github-actions[bot]"
-        
-        # 檢查是否有檔案更新，避免無異動時 Push 報錯
-        git add scan_cache.csv stock_memory.csv || true
-        
-        # 提交異動，若無檔案變更則安靜放行
-        git commit -m "🔄 自動更新快取與連霸記憶庫 [$(date '+%Y-%m-%d %H:%M:%S')]" -a || echo "ℹ️ 本輪數據無異動，無需更新儲存庫。"
-        
-        # 推送回主分支
-        git push origin main
+      - name: Run Stock Radar Scanner
+        run: python scanner_rising_point.py
+
+      - name: Commit and Push Memory/Cache Data
+        run: |
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          git add scan_cache.csv stock_memory.csv || true
+          git commit -m "🤖 自動同步更新：跨場次快取與連霸記憶庫 [skip ci]" || true
+          git push origin main || true
