@@ -136,8 +136,7 @@ def get_sector_heat_status(base_score=50):
         # 💥 核心防線：若下載回來完全為空，或者滿滿都是 NaN (Yahoo 流量受限時)，自動補上大盤底分保底
         if data.empty or data.isnull().all().all():
             for name in SECTOR_INDEXES.values():
-                p_bar = make_progress_bar(base_score, 100, 8)
-                heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
+                heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 ({base_score}分)"}
             return heat_map
 
         for t in tickers:
@@ -157,8 +156,7 @@ def get_sector_heat_status(base_score=50):
                 
                 # 如果單一個股切出空值，補上保底中性分數
                 if df_s.empty or len(df_s) < 20 or df_s["Close"].isnull().all():
-                    p_bar = make_progress_bar(base_score, 100, 8)
-                    heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
+                    heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 ({base_score}分)"}
                     continue
                 
                 c_p = float(df_s["Close"].iloc[-1])
@@ -187,23 +185,21 @@ def get_sector_heat_status(base_score=50):
                 
                 if h_p >= high_20d: h_score += 20
                 
-                p_bar = make_progress_bar(h_score, 100, 8)
-                if h_score >= 75: desc = f"💥超級狂熱 [{p_bar}] ({h_score}分)"
-                elif h_score >= 50: desc = f"🔥主力聚焦 [{p_bar}] ({h_score}分)"
-                elif h_score >= 25: desc = f"⛅溫和收納 [{p_bar}] ({h_score}分)"
-                else: desc = f"❄️極度冰凍 [{p_bar}] ({h_score}分)"
+                # 💡 已移除進度條，純文字與分數顯示
+                if h_score >= 75: desc = f"💥超級狂熱 ({h_score}分)"
+                elif h_score >= 50: desc = f"🔥主力聚焦 ({h_score}分)"
+                elif h_score >= 25: desc = f"⛅溫和收納 ({h_score}分)"
+                else: desc = f"❄️極度冰凍 ({h_score}分)"
                 
                 heat_map[name] = {"score": h_score, "is_hot": h_score >= 50, "desc": desc}
             except:
-                p_bar = make_progress_bar(base_score, 100, 8)
-                heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
+                heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 ({base_score}分)"}
     except Exception as e:
         print(f"ℹ️ 產業熱度下載異常 ({e})")
     
     for name in SECTOR_INDEXES.values():
         if name not in heat_map:
-            p_bar = make_progress_bar(base_score, 100, 8)
-            heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 [{p_bar}] ({base_score}分)"}
+            heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 ({base_score}分)"}
     return heat_map
 
 def get_all_taiwan_stocks_official():
@@ -407,7 +403,6 @@ if __name__ == "__main__":
 
     filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
     
-    # 將大盤情緒分數傳入，作為 yfinance 被鎖 IP 時的板塊基本分
     sector_heat_map = get_sector_heat_status(base_score=market_breadth_score)
 
     stock_map = get_all_taiwan_stocks_official()
