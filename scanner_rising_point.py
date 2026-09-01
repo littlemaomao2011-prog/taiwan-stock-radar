@@ -25,8 +25,8 @@ pd.set_option('display.width', 1000)
 # ==========================================
 TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
 TELEGRAM_CHAT_ID = "5220963669"
-CACHE_FILE = "scan_cache.csv"      # 快取資料庫
-MEMORY_FILE = "stock_memory.csv"    # 連霸記憶庫
+CACHE_FILE = "scan_cache.csv"     # 快取資料庫
+MEMORY_FILE = "stock_memory.csv"   # 連霸記憶庫
 
 # 大盤風控自訂閥值
 MARKET_MA_PERIOD = 20        # 大盤風控均線天數 (預設 20MA 月線)
@@ -133,7 +133,6 @@ def get_sector_heat_status(base_score=50):
     try:
         data = yf.download(tickers, period="40d", interval="1d", progress=False, auto_adjust=True)
         
-        # 💥 核心防線：若下載回來完全為空，或者滿滿都是 NaN (Yahoo 流量受限時)，自動補上大盤底分保底
         if data.empty or data.isnull().all().all():
             for name in SECTOR_INDEXES.values():
                 heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 ({base_score}分)"}
@@ -154,7 +153,6 @@ def get_sector_heat_status(base_score=50):
                 else:
                     df_s = data.dropna() if len(tickers) == 1 else pd.DataFrame()
                 
-                # 如果單一個股切出空值，補上保底中性分數
                 if df_s.empty or len(df_s) < 20 or df_s["Close"].isnull().all():
                     heat_map[name] = {"score": base_score, "is_hot": True, "desc": f"⛅溫和收納 ({base_score}分)"}
                     continue
@@ -185,7 +183,6 @@ def get_sector_heat_status(base_score=50):
                 
                 if h_p >= high_20d: h_score += 20
                 
-                # 💡 已移除進度條，純文字與分數顯示
                 if h_score >= 75: desc = f"💥超級狂熱 ({h_score}分)"
                 elif h_score >= 50: desc = f"🔥主力聚焦 ({h_score}分)"
                 elif h_score >= 25: desc = f"⛅溫和收納 ({h_score}分)"
