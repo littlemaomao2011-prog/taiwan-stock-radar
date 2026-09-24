@@ -187,6 +187,11 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     today_pct = ((current_now_price - d_close.iloc[-2]) / d_close.iloc[-2]) * 100 if (is_after_market and len(d_close) >= 2) else ((current_now_price - d_open.iloc[-1]) / d_open.iloc[-1]) * 100
     if today_pct > 9.5: return None
 
+    # 計算週漲跌幅(5日)、半月漲跌幅(10日)、整月漲跌幅(20日)
+    week_pct = ((current_now_price - d_close.iloc[-6]) / d_close.iloc[-6]) * 100 if len(d_close) >= 6 else 0.0
+    half_month_pct = ((current_now_price - d_close.iloc[-11]) / d_close.iloc[-11]) * 100 if len(d_close) >= 11 else 0.0
+    month_pct = ((current_now_price - d_close.iloc[-21]) / d_close.iloc[-21]) * 100 if len(d_close) >= 21 else 0.0
+
     ma5_d = d_close.tail(5).mean()
     ma10_d = d_close.tail(10).mean()
     ma20_d = d_close.tail(20).mean()
@@ -261,6 +266,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     return {
         "現價": current_now_price, "道氏形態": dow_status, "pattern_mode": pattern_mode, "bias_5ma": bias_5ma,
         "防守價": stop_loss_price, "預估風險": f"{risk_pct}%", "今日漲幅": f"{today_pct:+.1f}%",
+        "週漲跌幅": f"{week_pct:+.1f}%", "半月漲跌幅": f"{half_month_pct:+.1f}%", "整月漲跌幅": f"{month_pct:+.1f}%",
         "ma5_d": ma5_d, "ma10_d": ma10_d, "ma20_d": ma20_d, "ma60_d": ma60_d, "day_vol_ratio": day_vol_ratio,
         "atr_mult": dynamic_atr_mult, "atr_pct": f"{atr_pct:.1f}%"
     }
@@ -379,7 +385,8 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     return {
         "現價": round(c_p, 2), "score": total_score, "star_tag": star_tag, "action_tag": action_tag,
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
-        "今日漲幅": day_res["今日漲幅"], "小時量比": f"{vol_mult}倍", "量比數字": vol_mult,
+        "今日漲幅": day_res["今日漲幅"], "週漲跌幅": day_res["週漲跌幅"], "半月漲跌幅": day_res["半月漲跌幅"], "整月漲跌幅": day_res["整月漲跌幅"],
+        "小時量比": f"{vol_mult}倍", "量比數字": vol_mult,
         "KD數字": f"K:{round(kv, 1)}|D:{round(dv, 1)}", "VR趨勢": f"{round(vr26, 1)}",
         "細項評分": f"趨勢:{score_trend}|型態:{score_pattern}|資金:{score_capital}|動能:{score_momentum}|風險:{score_risk}",
         "atr_info": f"{day_res['atr_mult']}x ({day_res['atr_pct']})"
@@ -465,6 +472,9 @@ if __name__ == "__main__":
                                 "防守價": round(final_res["防守價"], 2), 
                                 "預估風險": final_res["預估風險"],
                                 "今日漲幅": final_res["今日漲幅"], 
+                                "週漲跌幅": final_res["週漲跌幅"],
+                                "半月漲跌幅": final_res["半月漲跌幅"],
+                                "整月漲跌幅": final_res["整月漲跌幅"],
                                 "KD數字": final_res["KD數字"], 
                                 "VR趨勢": final_res["VR趨勢"], 
                                 "小時量比": final_res["小時量比"], 
@@ -489,7 +499,8 @@ if __name__ == "__main__":
                 f" ➔ 戰態: <b>{row['action_tag']}</b>\n"
                 f" ➔ 評級: <code>[{score_bar}]</code>\n"
                 f" ➔ 產業: <b>{official_sec}</b> (<b>{sec_info['desc']}</b>)\n"
-                f" ➔ 價格: <b>{row['現價']}</b> (漲幅: <b>{row['今日漲幅']}</b>)\n"
+                f" ➔ 價格: <b>{row['現價']}</b> (今日: <b>{row['今日漲幅']}</b>)\n"
+                f" ➔ 區間: 週 <b>{row['週漲跌幅']}</b> | 半月 <b>{row['半月漲跌幅']}</b> | 月 <b>{row['整月漲跌幅']}</b>\n"
                 f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
                 f" ➔ 技術: KD <b>{row['KD數字']}</b>\n"
                 f" ➔ 戰術: 守 <b>{row['防守價']}</b> (風險: <b>{row['預估風險']}</b> | ATR: <b>{row['atr_info']}</b>)\n"
