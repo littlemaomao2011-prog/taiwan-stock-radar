@@ -305,10 +305,13 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     su = v_ser.where(chg > 0, 0).rolling(26).sum()
     sd = v_ser.where(chg < 0, 0).rolling(26).sum()
     sf = v_ser.where(chg == 0, 0).rolling(26).sum()
-    vr26 = float(((su + 0.5 * sf) / (sd.replace(0, 1) + 0.5 * sf)).iloc[-1] * 100)
+    vr_series = ((su + 0.5 * sf) / (sd.replace(0, 1) + 0.5 * sf)) * 100
+    
+    vr26 = float(vr_series.iloc[-1])
+    prev_vr26 = float(vr_series.iloc[-2]) if len(vr_series) >= 2 else vr26
 
-    # 🛑 嚴格過濾：VR < 100 代表買氣渙散、資金退潮，直接剔除！
-    if vr26 < 100:
+    # 🛑 嚴格過濾：VR < 100 (買氣渙散) 或 VR 沒有呈現上升趨勢，直接剔除！
+    if vr26 < 100 or vr26 <= prev_vr26:
         return None
 
     # ① 趨勢 (25分)
@@ -387,7 +390,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
         "今日漲幅": day_res["今日漲幅"], "週漲跌幅": day_res["週漲跌幅"], "半月漲跌幅": day_res["半月漲跌幅"], "整月漲跌幅": day_res["整月漲跌幅"],
         "小時量比": f"{vol_mult}倍", "量比數字": vol_mult,
-        "KD數字": f"K:{round(kv, 1)}|D:{round(dv, 1)}", "VR趨勢": f"{round(vr26, 1)}",
+        "KD數字": f"K:{round(kv, 1)}|D:{round(dv, 1)}", "VR趨勢": f"{round(vr26, 1)} (📈)",
         "細項評分": f"趨勢:{score_trend}|型態:{score_pattern}|資金:{score_capital}|動能:{score_momentum}|風險:{score_risk}",
         "atr_info": f"{day_res['atr_mult']}x ({day_res['atr_pct']})"
     }
