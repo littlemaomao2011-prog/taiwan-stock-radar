@@ -10,6 +10,7 @@ import pandas as pd
 import yfinance as yf
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# 🛑 警告與日誌過濾
 logging.getLogger('yfinance').setLevel(logging.CRITICAL)
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
@@ -19,8 +20,11 @@ pd.set_option('display.unicode.east_asian_width', True)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 1000)
 
-TELEGRAM_TOKEN = "8825844530:AAFGJ30cUvFDyOjreP75nPPtx70-HZZfkT0"
-TELEGRAM_CHAT_ID = "5220963669"
+# ----------------------------------------------------
+# 🔑 安全認證：環境變數讀取 (避免 Token 外洩)
+# ----------------------------------------------------
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 WEEKLY_MA_PERIOD = 20
 ATR_PERIOD = 14
@@ -34,21 +38,27 @@ def make_progress_bar(score, max_score=100, total_blocks=10):
         return "░" * total_blocks
 
 def send_tg_msg(msg):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ 未檢測到 Telegram Token 或 Chat ID 環境變數，跳過發送。")
+        print(msg)
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try: 
         res = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}, timeout=10)
-        if res.status_code != 200: print(f"❌ Telegram 錯誤: {res.text}")
-    except Exception as e: print(f"❌ Telegram 失敗: {e}")
+        if res.status_code != 200: 
+            print(f"❌ Telegram 錯誤: {res.text}")
+    except Exception as e: 
+        print(f"❌ Telegram 發送失敗: {e}")
 
 # ----------------------------------------------------
-# ⏰ 1. 精準台股盤中 / 盤後 / 時段判斷
+# ⏰ 1. 交易時間與時段狀態判斷
 # ----------------------------------------------------
 def get_taiwan_market_status():
     tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
     now_dt = datetime.datetime.now(tz_taiwan)
     now_str = now_dt.strftime("%Y-%m-%d %H:%M")
     
-    weekday = now_dt.weekday() # 0: Mon, ..., 5: Sat, 6: Sun
+    weekday = now_dt.weekday() # 0: Mon ... 5: Sat, 6: Sun
     hour = now_dt.hour
     minute = now_dt.minute
     time_num = hour * 100 + minute
@@ -71,14 +81,13 @@ def get_taiwan_market_status():
         "now_str": now_str,
         "hour": hour,
         "minute": minute,
-        "time_num": time_num,
         "is_trading_hours": is_trading_hours,
         "is_after_market": is_after_market,
         "market_phase": market_phase
     }
 
 # ----------------------------------------------------
-# 🌐 大盤廣度與風控閘門
+# 🌐 2. 大盤風控閘門與情緒模組
 # ----------------------------------------------------
 def check_market_filter_and_holiday():
     market_today_pct = 0.0
@@ -91,7 +100,12 @@ def check_market_filter_and_holiday():
             twii_data = [x for x in data if "加權指數" in x.get("MS_Name", "")]
             if twii_data:
                 try: 
-                    market_today_pct = float(twii_data[0].get("Change", "0").replace(",", "")) / 20000.0 * 100
+                    # 修正：精準計算大盤變動百分比
+                    raw_change = float(twii_data[0].get("Change", "0").replace(",", ""))
+                    # 若為跌幅，證交所 Dir 可能標示為 "-"，予以補正
+                    if "-" in twii_data[0].get("Dir", ""):
+                        raw_change = -abs(raw_change)
+                    market_today_pct = raw_change / 20000.0 * 100 # 概估趨勢
                 except: pass
             
             stock_up, stock_down = 0, 0
@@ -108,10 +122,11 @@ def check_market_filter_and_holiday():
                 breadth_bar = make_progress_bar(market_breadth_score, 100, 8)
                 
                 if market_breadth_score < 35:
-                    return "GATE_BLOCKED", f"🔴 市場廣度極差 ({market_breadth_score}分) ➔ 觸發風控閘門！\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
+                    return "GATE_BLOCKED", f"🔴 市場情緒低迷 ({market_breadth_score}分) ➔ 觸發風控閘門！\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場廣度：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
 
-                return "OK", f"🟢 官方個股廣度 ➔ 放行\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
-    except: pass
+                return "OK", f"🟢 官方廣度放行\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
+    except Exception as e:
+        print(f"⚠️ MI_INDEX 擷取異常: {e}")
 
     try:
         twii_df = yf.download("^TWII", period="10d", interval="1d", progress=False, auto_adjust=True)
@@ -126,61 +141,134 @@ def check_market_filter_and_holiday():
             breadth_bar = make_progress_bar(market_breadth_score, 100, 8)
 
             if market_breadth_score < 35:
-                return "GATE_BLOCKED", f"🔴 大盤動能低迷 ➔ 觸發風控閘門！\n📊 連續上漲天數:{up_days}/5日\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
+                return "GATE_BLOCKED", f"🔴 大盤動能不足 ➔ 觸發風控閘門！\n📊 近5日上漲天數:{up_days}天\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
 
-            return "OK", f"🟡 大盤趨勢備援 ➔ 放行\n📊 連續上漲天數:{up_days}/5日\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
-    except: pass
+            return "OK", f"🟡 大盤趨勢備援放行\n📊 近5日上漲天數:{up_days}天\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
+    except Exception as e:
+        print(f"⚠️ yfinance ^TWII 擷取異常: {e}")
 
     breadth_bar = make_progress_bar(50, 100, 8)
     return "OK", f"🟠 基礎防禦模式 ➔ 放行\n📊 市場情緒：[{breadth_bar}] 50分 (中性)", 0.0, 50
 
 # ----------------------------------------------------
-# 📊 2. 免費串接三大法人買賣超與融資籌碼 (FinMind/TWSE)
+# 📊 3. 法人籌碼數據模組 (含相對量計算與 DATA_ERROR 處理)
 # ----------------------------------------------------
 def get_chip_data_finmind(stock_id):
-    """免費獲取三大法人近 3 日籌碼與融資動向"""
+    """
+    抓取近 3 日法人買賣超，並以「法人淨買超 / 3日累積成交量」進行相對強度量化。
+    若 API 失敗，明確回傳 error_status="DATA_ERROR"。
+    """
     chip_res = {
-        "foreign_buy": 0,    # 外資連買日數/買超額
-        "trust_buy": 0,      # 投信連買日數/買超額
-        "margin_diff": 0,    # 融資張數變化
-        "chip_score": 0,     # 籌碼評分 (0 ~ 15分)
-        "chip_desc": "籌碼中性"
+        "trust_ratio": 0.0,
+        "foreign_ratio": 0.0,
+        "error_status": "OK",
+        "chip_desc": ""
     }
     try:
-        # 免費抓取近 5 天法人資料
-        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
-        start_str = (datetime.datetime.now() - datetime.timedelta(days=10)).strftime("%Y-%m-%d")
+        today_dt = datetime.datetime.now()
+        start_dt = today_dt - datetime.timedelta(days=12)
+        today_str = today_dt.strftime("%Y-%m-%d")
+        start_str = start_dt.strftime("%Y-%m-%d")
         
-        url = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            df = pd.DataFrame(res.json().get("data", []))
-            if not df.empty:
-                # 投信買賣超
-                trust_df = df[df["name"] == "Investment_Trust"].tail(3)
-                trust_sum = trust_df["buy"].sum() - trust_df["sell"].sum() if not trust_df.empty else 0
-                
-                # 外資買賣超
-                foreign_df = df[df["name"] == "Foreign_Investor"].tail(3)
-                foreign_sum = foreign_df["buy"].sum() - foreign_df["sell"].sum() if not foreign_df.empty else 0
+        # 1. 抓取法人買賣超
+        url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
+        res_chip = requests.get(url_chip, timeout=6)
+        
+        # 2. 抓取成交量 (用於計算相對買超比例)
+        url_vol = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
+        res_vol = requests.get(url_vol, timeout=6)
 
-                chip_score = 0
-                desc_parts = []
+        if res_chip.status_code == 200 and res_vol.status_code == 200:
+            df_chip = pd.DataFrame(res_chip.json().get("data", []))
+            df_vol = pd.DataFrame(res_vol.json().get("data", []))
+            
+            if not df_chip.empty and not df_vol.empty:
+                # 取得近 3 個交易日總成交量 (股數)
+                recent_vol_shares = df_vol.tail(3)["Trading_Volume"].sum()
                 
-                if trust_sum > 0:
-                    chip_score += 6
-                    desc_parts.append("🔥投信買超")
-                if foreign_sum > 0:
-                    chip_score += 5
-                    desc_parts.append("🌐外資買超")
+                if recent_vol_shares > 0:
+                    # 投信淨買超股數
+                    trust_df = df_chip[df_chip["name"] == "Investment_Trust"].tail(3)
+                    trust_net_shares = trust_df["buy"].sum() - trust_df["sell"].sum() if not trust_df.empty else 0
+                    
+                    # 外資淨買超股數
+                    foreign_df = df_chip[df_chip["name"] == "Foreign_Investor"].tail(3)
+                    foreign_net_shares = foreign_df["buy"].sum() - foreign_df["sell"].sum() if not foreign_df.empty else 0
 
-                chip_res["foreign_buy"] = foreign_sum
-                chip_res["trust_buy"] = trust_sum
-                chip_res["chip_score"] = chip_score
-                chip_res["chip_desc"] = " | ".join(desc_parts) if desc_parts else "法人觀望"
-    except: pass
+                    chip_res["trust_ratio"] = (trust_net_shares / recent_vol_shares) * 100.0
+                    chip_res["foreign_ratio"] = (foreign_net_shares / recent_vol_shares) * 100.0
+                    
+                    desc_parts = []
+                    if chip_res["trust_ratio"] > 0:
+                        desc_parts.append(f"投信+{chip_res['trust_ratio']:.1f}%")
+                    elif chip_res["trust_ratio"] < 0:
+                        desc_parts.append(f"投信{chip_res['trust_ratio']:.1f}%")
+                        
+                    if chip_res["foreign_ratio"] > 0:
+                        desc_parts.append(f"外資+{chip_res['foreign_ratio']:.1f}%")
+                    elif chip_res["foreign_ratio"] < 0:
+                        desc_parts.append(f"外資{chip_res['foreign_ratio']:.1f}%")
+
+                    chip_res["chip_desc"] = " | ".join(desc_parts) if desc_parts else "法人觀望"
+                    return chip_res
+
+        # 若回傳空資料或 HTTP code 非 200，標記錯誤
+        chip_res["error_status"] = "DATA_ERROR"
+        chip_res["chip_desc"] = "⚠️ 籌碼數據異常 (API Failure)"
+    except Exception as e:
+        chip_res["error_status"] = "DATA_ERROR"
+        chip_res["chip_desc"] = f"⚠️ 籌碼擷取失敗 ({type(e).__name__})"
+        
     return chip_res
 
+# ----------------------------------------------------
+# 🧮 4. 資金與籌碼評分器 (ChipVolumeScorer, 滿分 30 分)
+# ----------------------------------------------------
+class ChipVolumeScorer:
+    """
+    資金與籌碼模組計分器 (嚴格滿分 30 分)
+    - 產業強勢群聚: 8 分
+    - 小時量比: 4 分
+    - VR 指標: 3 分
+    - 法人籌碼相對強度: 15 分 (投信 8 分 + 外資 7 分)
+    """
+    @staticmethod
+    def calculate_score(sector_score_8, volume_score_4, vr_score_3, chip_res):
+        # 1. 基礎技術資金分 (最大 15 分)
+        s_sector = min(8.0, max(0.0, sector_score_8))
+        s_vol = min(4.0, max(0.0, volume_score_4))
+        s_vr = min(3.0, max(0.0, vr_score_3))
+        
+        # 2. 法人籌碼相對強度分 (最大 15 分)
+        s_chip = 0.0
+        if chip_res.get("error_status") == "DATA_ERROR":
+            s_chip = 0.0 # 錯誤處理：API 失敗給 0 分，不假裝中性
+        else:
+            t_ratio = chip_res.get("trust_ratio", 0.0)
+            f_ratio = chip_res.get("foreign_ratio", 0.0)
+            
+            # 投信評分 (最高 8 分)
+            # 門檻理由：近3日買超佔總成交量 >= 3.0% 屬極度強勢卡位；>= 1.0% 為中度佈局；> 0% 為微幅買超
+            s_trust = 0.0
+            if t_ratio >= 3.0: s_trust = 8.0
+            elif t_ratio >= 1.0: s_trust = 6.0
+            elif t_ratio > 0.0: s_trust = 3.0
+            
+            # 外資評分 (最高 7 分)
+            # 門檻理由：外資成交量基期通常較大，近3日淨買超 >= 5.0% 屬強勢買超；>= 2.0% 為中度佈局；> 0% 為微幅買超
+            s_foreign = 0.0
+            if f_ratio >= 5.0: s_foreign = 7.0
+            elif f_ratio >= 2.0: s_foreign = 5.0
+            elif f_ratio > 0.0: s_foreign = 2.0
+
+            s_chip = s_trust + s_foreign
+
+        total_capital_score = round(s_sector + s_vol + s_vr + s_chip, 1)
+        return min(30.0, total_capital_score), s_chip
+
+# ----------------------------------------------------
+# 🏢 5. 官方產業抓取與強勢群聚計算
+# ----------------------------------------------------
 def get_all_taiwan_stocks_official():
     stock_dict = {}
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -215,39 +303,86 @@ def get_all_taiwan_stocks_official():
                             "sname": sname, 
                             "sector": official_sector
                         }
-        except: pass
+        except Exception as e:
+            print(f"⚠️ 抓取官方產業失敗 ({m_type}): {e}")
     return stock_dict
 
-def calculate_real_sector_heat(stock_map, passed_day_stocks, base_market_score):
-    sector_counts = {}
-    for ticker, d_info in passed_day_stocks.items():
+def calculate_real_sector_heat(stock_map, passed_day_stocks):
+    """
+    計算「產業強勢群聚」分數 (上限 8 分)
+    改採用相對指標：通過初篩檔數 ÷ 該產業全市場總檔數 (產業滲透率)
+    """
+    # 統計全市場各產業總檔數
+    total_sector_counts = {}
+    for ticker, info in stock_map.items():
+        sec = info.get("sector", "一般產業")
+        total_sector_counts[sec] = total_sector_counts.get(sec, 0) + 1
+
+    # 統計初篩通過檔數
+    passed_sector_counts = {}
+    for ticker in passed_day_stocks.keys():
         sec = stock_map.get(ticker, {}).get("sector", "一般產業")
-        sector_counts[sec] = sector_counts.get(sec, 0) + 1
+        passed_sector_counts[sec] = passed_sector_counts.get(sec, 0) + 1
         
     sector_heat = {}
-    for sec, count in sector_counts.items():
-        if count >= 5: score, desc = 90, f"🔥 主力熱門群聚 ({count}檔)"
-        elif count >= 3: score, desc = 75, f"⚡ 資金輪動聚焦 ({count}檔)"
-        elif count >= 2: score, desc = 60, f"⛅ 溫和同步 ({count}檔)"
-        else: score, desc = max(30, base_market_score), f"🌱 個別獨立發動 (1檔)"
+    for sec, pass_cnt in passed_sector_counts.items():
+        total_cnt = total_sector_counts.get(sec, pass_cnt)
+        ratio = (pass_cnt / total_cnt) * 100.0 if total_cnt > 0 else 0.0
+        
+        # 門檻理由：當該產業有 >= 15% 股票強勢發動，代表強勢群聚；>= 10% 為多頭聚焦
+        if ratio >= 15.0 or pass_cnt >= 4:
+            score = 8.0
+            desc = f"🔥 產業強勢群聚 ({pass_cnt}檔, {ratio:.1f}%)"
+        elif ratio >= 10.0 or pass_cnt >= 2:
+            score = 6.0
+            desc = f"⚡ 產業多頭聚焦 ({pass_cnt}檔, {ratio:.1f}%)"
+        elif ratio >= 5.0:
+            score = 4.0
+            desc = f"⛅ 產業溫和同步 ({pass_cnt}檔)"
+        else:
+            score = 2.0
+            desc = f"🌱 個股獨立發動 ({pass_cnt}檔)"
             
-        sector_heat[sec] = {"score": score, "desc": desc, "count": count}
+        sector_heat[sec] = {"score": score, "desc": desc}
+        
     return sector_heat
 
+# ----------------------------------------------------
+# 📉 6. 階段 0 與 階段 1 日週線篩選 (剔除 Look-ahead Bias)
+# ----------------------------------------------------
 def stage0_weekly_filter(df_w):
-    if df_w.empty or len(df_w) < WEEKLY_MA_PERIOD: return False
-    w_close = df_w["Close"].squeeze().astype(float)
-    weekly_ma = w_close.rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
-    return not pd.isna(weekly_ma) and w_close.iloc[-1] >= weekly_ma
+    """
+    週線趨勢過濾：使用「已完結的前一週 K 線 (iloc[-2])」計算 20週 MA，
+    避免盤中未收盤週 K 變動造成買點訊號閃爍與Look-ahead bias。
+    """
+    if df_w.empty or len(df_w) < (WEEKLY_MA_PERIOD + 1): 
+        return False
+    
+    # 僅保留向後順推 ffill，堅決不使用 bfill
+    df_clean = df_w.ffill().dropna(subset=["Close"])
+    if len(df_clean) < (WEEKLY_MA_PERIOD + 1):
+        return False
+        
+    w_close = df_clean["Close"].squeeze().astype(float)
+    
+    # 取已封盤的前一週 (iloc[-2]) 做 20週 MA
+    w_ma20_confirmed = w_close.iloc[:-1].rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
+    
+    # 最新價格 (可為盤中現價 iloc[-1]) 需站於確定的 20週 MA 之上
+    current_p = w_close.iloc[-1]
+    return not pd.isna(w_ma20_confirmed) and current_p >= w_ma20_confirmed
 
 def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_d.columns for col in required_cols): return None
-    df_d = df_d.bfill().ffill()
-    if is_after_market and df_d["Volume"].iloc[-1] == 0 and len(df_d) >= 2: df_d = df_d.iloc[:-1]
+    
+    # 修正：移除可能造成 Look-ahead bias 的 bfill()，僅使用 ffill()
+    df_d = df_d.ffill().dropna(subset=["Close"])
+    if is_after_market and df_d["Volume"].iloc[-1] == 0 and len(df_d) >= 2: 
+        df_d = df_d.iloc[:-1]
     if len(df_d) < 25: return None
         
-    historical_vols = df_d["Volume"].dropna().iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].dropna().tail(5)
+    historical_vols = df_d["Volume"].iloc[:-1].tail(5) if (current_hour < 10 and not is_after_market) else df_d["Volume"].tail(5)
     if len(historical_vols) < 5 or historical_vols.mean() < 100: return None
         
     d_close = df_d["Close"].squeeze().astype(float)
@@ -258,7 +393,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     
     current_now_price = round(float(d_close.iloc[-1]), 2)
     today_pct = ((current_now_price - d_close.iloc[-2]) / d_close.iloc[-2]) * 100 if (is_after_market and len(d_close) >= 2) else ((current_now_price - d_open.iloc[-1]) / d_open.iloc[-1]) * 100
-    if today_pct > 9.5: return None
+    if today_pct > 9.5: return None # 排除漲停無法買進標的
 
     week_pct = ((current_now_price - d_close.iloc[-6]) / d_close.iloc[-6]) * 100 if len(d_close) >= 6 else 0.0
     half_month_pct = ((current_now_price - d_close.iloc[-11]) / d_close.iloc[-11]) * 100 if len(d_close) >= 11 else 0.0
@@ -268,7 +403,9 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     ma10_d = d_close.tail(10).mean()
     ma20_d = d_close.tail(20).mean()
     ma60_d = d_close.tail(60).mean() if len(d_close) >= 60 else ma20_d
-    bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100
+    
+    # 5MA 偏離度 (Bias %)
+    bias_5ma = ((current_now_price - ma5_d) / ma5_d) * 100.0
 
     pivot_lows, pivot_highs = [], []
     for i in range(2, len(d_low) - 2):
@@ -316,6 +453,7 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
         else:
             return None 
 
+    # 動態 ATR 防守
     prev_close = d_close.shift(1)
     tr = pd.concat([d_high - d_low, (d_high - prev_close).abs(), (d_low - prev_close).abs()], axis=1).max(axis=1)
     current_atr = float(tr.rolling(ATR_PERIOD).mean().iloc[-1]) if not pd.isna(tr.rolling(ATR_PERIOD).mean().iloc[-1]) else 0.0
@@ -342,33 +480,14 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     }
 
 # ----------------------------------------------------
-# 🛠️ 3. Yahoo 60 分鐘 K 線數據修補 (Data Cleaning)
+# ⏱️ 7. 60分鐘線精準評分 (stage2_60m_filter, 總分 100 分)
 # ----------------------------------------------------
-def clean_and_scale_60m_data(df_60m, current_hour, current_minute, is_trading_hours):
-    """校正 Yahoo 60m 盤中數據，補償未收盤 K 線的成交量比例 (Volume Scaling)"""
-    if df_60m.empty: return df_60m
-    
-    df = df_60m.copy()
-    
-    # 盤中若處於交易時間，對最新一根 60m K 線進行成交量比例放大修補
-    if is_trading_hours and len(df) > 0:
-        # 計算目前這 1 小時 K 線開盤過了幾分鐘
-        minutes_into_hour = current_minute if current_minute > 0 else 60
-        scale_factor = 60.0 / max(10.0, float(minutes_into_hour)) # 至少依 10 分鐘計算防暴增
-        
-        # 放大最後一根 K 線的成交量估算值，避免量能失真
-        last_idx = df.index[-1]
-        df.loc[last_idx, "Volume"] = df.loc[last_idx, "Volume"] * min(scale_factor, 3.0)
-        
-    return df
-
-def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_hours, is_after_market, sector_info, market_breadth_score, chip_res, df_w=None):
+def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_hours, is_after_market, sector_info, chip_res, df_w=None):
     required_cols = ["High", "Low", "Close", "Volume", "Open"]
     if not all(col in df_60m.columns for col in required_cols): return None
     
-    # 🛠️ 執行 60m 量能校正修補
-    df_60m = clean_and_scale_60m_data(df_60m, current_hour, current_minute, is_trading_hours)
-    df_60m = df_60m.bfill().ffill()
+    # 剔除 bfill，僅用 ffill 補全中間缺失
+    df_60m = df_60m.ffill().dropna(subset=["Close"])
     if len(df_60m) < 40: return None
     
     c_ser = df_60m["Close"].squeeze().astype(float)
@@ -380,21 +499,24 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
     ma_60m_30 = c_ser.rolling(30).mean().iloc[-1]
     if pd.isna(ma_60m_30) or c_p < (ma_60m_30 * 0.985): return None
     
-    v_mean_20h = v_ser.tail(21).head(20).mean()
+    v_mean_20h = v_ser.iloc[:-1].tail(20).mean()
     vol_mult = round(v_p / v_mean_20h, 1) if (v_mean_20h and v_mean_20h > 0) else 1.0
 
+    # KD 計算
     low_min, high_max = l_ser.rolling(40).min(), h_ser.rolling(40).max()
     rsv = ((c_ser - low_min) / (high_max - low_min + 1e-8)) * 100
     k_series = rsv.ewm(com=2, adjust=False).mean() 
     d_series = k_series.ewm(com=2, adjust=False).mean()
     kv, dv = float(k_series.iloc[-1]), float(d_series.iloc[-1])
     
+    # MACD 計算
     ema12, ema26 = c_ser.ewm(span=12, adjust=False).mean(), c_ser.ewm(span=26, adjust=False).mean()
     dif = ema12 - ema26
     dea = dif.ewm(span=9, adjust=False).mean()
     curr_hist = float((dif - dea).iloc[-1])
     prev_hist = float((dif - dea).iloc[-2])
 
+    # VR 計算 (Volume Ratio)
     chg = c_ser.diff()
     su = v_ser.where(chg > 0, 0).rolling(26).sum()
     sd = v_ser.where(chg < 0, 0).rolling(26).sum()
@@ -404,22 +526,41 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
     vr26 = float(vr_series.iloc[-1])
     prev_vr26 = float(vr_series.iloc[-2]) if len(vr_series) >= 2 else vr26
 
-    if vr26 < 100 or vr26 <= prev_vr26: return None
+    # 🛑 修正 VR 過濾邏輯：取消過度嚴格的下降即剔除，改為「低於 80 絕對剔除」
+    if vr26 < 80.0:
+        return None
 
-    # ① 趨勢 (20分)
+    # VR 計分 (最高 3 分)
+    score_vr = 0.0
+    if vr26 >= 120.0:
+        score_vr = 3.0
+    elif vr26 >= 100.0:
+        score_vr = 2.0 if vr26 >= prev_vr26 else 1.0
+    else:
+        score_vr = 0.5
+
+    # ====================================================
+    # 🎯 完整 100 分評分矩陣 (全維度無落差)
+    # ====================================================
+
+    # 1️⃣ 趨勢維度 (20 分)
     score_trend = 0.0
-    if df_w is not None and len(df_w) >= 20:
-        w_close = df_w["Close"].squeeze().astype(float)
-        w_ma20 = w_close.rolling(20).mean()
-        if c_p > w_ma20.iloc[-1]: score_trend += 6.0
-        if len(w_ma20) >= 2 and w_ma20.iloc[-1] > w_ma20.iloc[-2]: score_trend += 5.0
+    if df_w is not None and len(df_w) >= (WEEKLY_MA_PERIOD + 1):
+        w_clean = df_w.ffill().dropna(subset=["Close"])
+        w_close = w_clean["Close"].squeeze().astype(float)
+        # 嚴格使用確認封盤的前一週 (iloc[-2]) 計算 20週 MA
+        w_ma20_conf = w_close.iloc[:-1].rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
+        if c_p >= w_ma20_conf: score_trend += 6.0
+        if len(w_close) >= (WEEKLY_MA_PERIOD + 2):
+            w_ma20_prev = w_close.iloc[:-2].rolling(WEEKLY_MA_PERIOD).mean().iloc[-1]
+            if w_ma20_conf > w_ma20_prev: score_trend += 5.0
     else: score_trend += 6.0
 
     if c_p > day_res.get("ma60_d", 0): score_trend += 3.0
     if day_res.get("ma20_d", 0) > day_res.get("ma60_d", 0): score_trend += 3.0
     if day_res.get("ma5_d", 0) > day_res.get("ma10_d", 0) > day_res.get("ma20_d", 0): score_trend += 3.0
 
-    # ② 型態 (20分)
+    # 2️⃣ 型態維度 (20 分)
     pattern_mode = day_res.get("pattern_mode")
     score_pattern = 0.0
     action_tag, star_tag = "", ""
@@ -445,37 +586,47 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
         action_tag = "🟢 蓄勢觀察區"
         star_tag = "⭐⭐ [潛伏觀察]"
 
-    # ③ 資金與籌碼 (30分：含 15分 法人籌碼權重)
-    sector_score_raw = sector_info.get("score", market_breadth_score)
-    score_sector = round((sector_score_raw / 100.0) * 8.0, 1)
-
-    score_vol = 0.0
-    day_vol_ratio = day_res.get("day_vol_ratio", 1.0)
+    # 3️⃣ 資金與籌碼維度 (30 分) - 實裝 ChipVolumeScorer
+    sector_score_8 = sector_info.get("score", 2.0) # 產業強勢群聚 (最大 8分)
+    
+    # 小時量比計分 (最大 4 分)
+    volume_score_4 = 0.0
     if pattern_mode == "C":
-        if day_vol_ratio < 0.85: score_vol += 4.0
-        elif day_vol_ratio < 1.0: score_vol += 2.0
+        if day_res.get("day_vol_ratio", 1.0) < 0.85: volume_score_4 = 4.0
+        elif day_res.get("day_vol_ratio", 1.0) < 1.0: volume_score_4 = 2.0
     else:
-        if vol_mult >= 1.5: score_vol += 4.0
-        elif vol_mult >= 1.0: score_vol += 2.0
+        if vol_mult >= 1.5: volume_score_4 = 4.0
+        elif vol_mult >= 1.0: volume_score_4 = 2.0
 
-    score_vr = 3.0 if vr26 >= 140 else 1.0
-    score_chip = chip_res.get("chip_score", 0) # 法人融資籌碼得分 (0~15分)
-    score_capital = round(score_sector + score_vol + score_vr + score_chip, 1)
+    # 呼叫 ChipVolumeScorer 計算嚴格滿分 30 分
+    score_capital, score_chip = ChipVolumeScorer.calculate_score(
+        sector_score_8, volume_score_4, score_vr, chip_res
+    )
 
-    # ④ 動能 (20分)
+    # 4️⃣ 短線動能維度 (20 分)
     score_momentum = 0.0
     if kv >= dv: score_momentum += 5.0
     if 45.0 <= kv <= 75.0: score_momentum += 5.0
     if curr_hist > 0: score_momentum += 5.0
     if curr_hist >= prev_hist: score_momentum += 5.0
 
-    # ⑤ 風險 (10分)
+    # 5️⃣ 風險報酬維度 (10 分) - 修正 5MA 乖離雙向邏輯
     risk_val = float(day_res["預估風險"].replace("%", ""))
     score_risk_stop = 5.0 if risk_val <= 4.0 else 3.0 if risk_val <= 6.5 else 1.0
-    bias_5ma = day_res.get("bias_5ma", 0)
-    score_risk_bias = 5.0 if bias_5ma <= 3.0 else 3.0 if bias_5ma <= 5.0 else 0.0
+    
+    # 修正 5MA Bias 分數計算：雙向絕對值偏離度控管
+    bias_5ma = day_res.get("bias_5ma", 0.0)
+    score_risk_bias = 0.0
+    if -3.0 <= bias_5ma <= 3.0:
+        score_risk_bias = 5.0 # 貼近均線，安全度高
+    elif (-5.0 <= bias_5ma < -3.0) or (3.0 < bias_5ma <= 5.0):
+        score_risk_bias = 3.0 # 輕微偏離
+    else:
+        score_risk_bias = 0.0 # 弱勢破線 (<-5%) 或 過熱追高 (>+5%)，給 0 分
+
     score_risk = round(score_risk_stop + score_risk_bias, 1)
 
+    # 💯 總分加總 (嚴格最大值 100 分)
     total_score = round(score_trend + score_pattern + score_capital + score_momentum + score_risk, 1)
 
     return {
@@ -483,29 +634,38 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
         "道氏形態": day_res["道氏形態"], "防守價": day_res["防守價"], "預估風險": day_res["預估風險"],
         "今日漲幅": day_res["今日漲幅"], "週漲跌幅": day_res["週漲跌幅"], "半月漲跌幅": day_res["半月漲跌幅"], "整月漲跌幅": day_res["整月漲跌幅"],
         "小時量比": f"{vol_mult}倍", "量比數字": vol_mult,
-        "KD數字": f"K:{round(kv, 1)}|D:{round(dv, 1)}", "VR趨勢": f"{round(vr26, 1)} (📈)",
+        "KD數字": f"K:{round(kv, 1)}|D:{round(dv, 1)}", "VR趨勢": f"{round(vr26, 1)}",
         "籌碼簡報": chip_res["chip_desc"],
         "細項評分": f"趨勢:{score_trend}|型態:{score_pattern}|籌碼資金:{score_capital}|動能:{score_momentum}|風險:{score_risk}",
         "atr_info": f"{day_res['atr_mult']}x ({day_res['atr_pct']})"
     }
 
+# ----------------------------------------------------
+# 🚀 8. 多線程資料下載與主程式流程
+# ----------------------------------------------------
 def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
     passed_day_stocks = {}
     passed_weekly_df = {}
     try:
         data_d = yf.download(chunk, period="60d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
-        data_w = yf.download(chunk, period="30wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True)
+        data_w = yf.download(chunk, period="35wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True)
         for ticker in chunk:
             if isinstance(data_w.columns, pd.MultiIndex) and ticker in data_w.columns.get_level_values(0):
                 df_stock_w = data_w[ticker].dropna(subset=["Close"])
                 df_stock_d = data_d[ticker].dropna(subset=["Close"])
+                
+                # 剔除 bfill 污染
+                df_stock_w = df_stock_w.ffill()
+                df_stock_d = df_stock_d.ffill()
+                
                 if not stage0_weekly_filter(df_stock_w): continue  
                 df_stock_d.columns = [c.capitalize() for c in df_stock_d.columns]
                 day_res = stage1_day_filter(df_stock_d, current_hour, current_minute, is_after_market)
                 if day_res: 
                     passed_day_stocks[ticker] = day_res
                     passed_weekly_df[ticker] = df_stock_w
-    except: pass
+    except Exception as e:
+        print(f"⚠️ 下載批次數據失敗: {e}")
     return passed_day_stocks, passed_weekly_df
 
 if __name__ == "__main__":
@@ -516,6 +676,7 @@ if __name__ == "__main__":
     is_after_market = m_status["is_after_market"]
     market_phase = m_status["market_phase"]
 
+    # 1. 檢查風控閘門
     filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
 
     if filter_status == "GATE_BLOCKED":
@@ -530,6 +691,7 @@ if __name__ == "__main__":
         print("⛔ 大盤風控閘門已觸發，程式終止。")
         exit(0)
 
+    # 2. 抓取官方真實產業
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
     
@@ -538,6 +700,7 @@ if __name__ == "__main__":
     
     day_passed_pool = {}
     weekly_df_pool = {}
+    print(f"🔄 開始執行日線/週線初篩 (共 {len(all_yf_codes)} 檔標的)...")
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = {executor.submit(download_all_timeframes_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
         for future in as_completed(futures):
@@ -545,10 +708,12 @@ if __name__ == "__main__":
             day_passed_pool.update(d_res or {})
             weekly_df_pool.update(w_res or {})
     
-    sector_heat_map = calculate_real_sector_heat(stock_map, day_passed_pool, market_breadth_score)
+    # 3. 動態計算產業強勢群聚分數 (相對佔比)
+    sector_heat_map = calculate_real_sector_heat(stock_map, day_passed_pool)
 
     results = []
     if day_passed_pool:
+        print(f"⚡ 初篩通過 {len(day_passed_pool)} 檔，開始計算籌碼與 60m 全維度分數...")
         passed_tickers = list(day_passed_pool.keys())
         passed_chunks = [passed_tickers[i:i + 20] for i in range(0, len(passed_tickers), 20)]
         for p_chunk in passed_chunks:
@@ -561,13 +726,24 @@ if __name__ == "__main__":
                         
                         sid = str(stock_map[ticker]["sid"])
                         official_sector = stock_map[ticker].get("sector", "一般產業")
-                        sector_info = sector_heat_map.get(official_sector, {"score": market_breadth_score, "desc": "🌱 一般表現 (1檔)"})
+                        sector_info = sector_heat_map.get(official_sector, {"score": 2.0, "desc": "🌱 一般表現"})
                         
-                        # 抓取該個股的三大法人籌碼
+                        # 🔗 [完整資料流整合]：FinMind 法人資料 ➔ ChipVolumeScorer ➔ stage2_60m_filter ➔ 最終評分
                         chip_res = get_chip_data_finmind(sid)
                         
                         df_w = weekly_df_pool.get(ticker)
-                        final_res = stage2_60m_filter(df_stock_60m, day_passed_pool[ticker], current_hour, current_minute, is_trading_hours, is_after_market, sector_info, market_breadth_score, chip_res, df_w)
+                        final_res = stage2_60m_filter(
+                            df_stock_60m, 
+                            day_passed_pool[ticker], 
+                            current_hour, 
+                            current_minute, 
+                            is_trading_hours, 
+                            is_after_market, 
+                            sector_info, 
+                            chip_res, 
+                            df_w
+                        )
+                        
                         if final_res:
                             results.append({
                                 "代碼": sid, 
@@ -592,7 +768,9 @@ if __name__ == "__main__":
                                 "細項評分": final_res["細項評分"],
                                 "atr_info": final_res["atr_info"]
                             })
-            except: continue
+            except Exception as e:
+                print(f"⚠️ 60m 篩選運算異常: {e}")
+                continue
                     
     header_msg = f"🔔 <b>【台股 666 {market_phase}戰報】</b>\n⏰ 時間：{now_str}\n🌐 大盤風控：{filter_msg}\n------------------------\n"
 
@@ -618,5 +796,7 @@ if __name__ == "__main__":
                 f" ➔ 結構: <code>{row['細項評分']}</code>\n"
             )
         send_tg_msg(header_msg + "\n".join(top_list))
+        print("✅ 戰報發送完成！")
     else:
         send_tg_msg(header_msg + "ℹ️ 池中無符合全維度高分標準之個股。")
+        print("ℹ️ 無符合條件個股。")
