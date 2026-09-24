@@ -301,6 +301,10 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     sf = v_ser.where(chg == 0, 0).rolling(26).sum()
     vr26 = float(((su + 0.5 * sf) / (sd.replace(0, 1) + 0.5 * sf)).iloc[-1] * 100)
 
+    # 🛑 嚴格過濾：VR < 100 代表買氣渙散、資金退潮，直接剔除！
+    if vr26 < 100:
+        return None
+
     # ① 趨勢 (25分)
     score_trend = 0.0
     if df_w is not None and len(df_w) >= 20:
@@ -353,7 +357,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
         if vol_mult >= 1.5: score_vol += 10.0
         elif vol_mult >= 1.0: score_vol += 6.0
 
-    score_vr = 5.0 if vr26 >= 140 else 3.0 if vr26 >= 100 else 1.0
+    score_vr = 5.0 if vr26 >= 140 else 3.0
     score_capital = round(score_sector + score_vol + score_vr, 1)
 
     # ④ 動能 (20分)
@@ -487,6 +491,7 @@ if __name__ == "__main__":
                 f" ➔ 產業: <b>{official_sec}</b> (<b>{sec_info['desc']}</b>)\n"
                 f" ➔ 價格: <b>{row['現價']}</b> (漲幅: <b>{row['今日漲幅']}</b>)\n"
                 f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
+                f" ➔ 技術: KD <b>{row['KD數字']}</b>\n"
                 f" ➔ 戰術: 守 <b>{row['防守價']}</b> (風險: <b>{row['預估風險']}</b> | ATR: <b>{row['atr_info']}</b>)\n"
                 f" ➔ 結構: <code>{row['細項評分']}</code>\n"
             )
