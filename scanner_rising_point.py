@@ -41,7 +41,49 @@ def send_tg_msg(msg):
     except Exception as e: print(f"❌ Telegram 失敗: {e}")
 
 # ----------------------------------------------------
-# 🌐 精準市場廣度 (Market Breadth) 與多層防禦備援
+# ⏰ 2. 修正台股盤中 / 盤後 / 非交易時間精準判斷
+# ----------------------------------------------------
+def get_taiwan_market_status():
+    tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
+    now_dt = datetime.datetime.now(tz_taiwan)
+    now_str = now_dt.strftime("%Y-%m-%d %H:%M")
+    
+    weekday = now_dt.weekday() # 0: Mon, ..., 5: Sat, 6: Sun
+    hour = now_dt.hour
+    minute = now_dt.minute
+    time_num = hour * 100 + minute
+
+    # 判斷是否為週末
+    is_weekend = weekday >= 5
+
+    # 台股盤中交易時間: 週一~週五 09:00 ~ 13:30
+    is_trading_hours = (not is_weekend) and (900 <= time_num <= 1330)
+    
+    # 盤後狀態 (13:31 之後或週末)
+    is_after_market = is_weekend or (time_num > 1330) or (time_num < 900)
+
+    # 描述字串
+    if is_trading_hours:
+        market_phase = "⚡ 盤中交易時段"
+    elif is_weekend:
+        market_phase = "☕ 週末休市"
+    elif time_num > 1330:
+        market_phase = "⚖️ 盤後結算時段"
+    else:
+        market_phase = "🌙 開盤前/非交易時段"
+
+    return {
+        "now_dt": now_dt,
+        "now_str": now_str,
+        "hour": hour,
+        "minute": minute,
+        "is_trading_hours": is_trading_hours,
+        "is_after_market": is_after_market,
+        "market_phase": market_phase
+    }
+
+# ----------------------------------------------------
+# 🌐 精準市場廣度與風控閘門
 # ----------------------------------------------------
 def check_market_filter_and_holiday():
     market_today_pct = 0.0
@@ -71,6 +113,11 @@ def check_market_filter_and_holiday():
             if total_active > 100:
                 market_breadth_score = int((stock_up / total_active) * 100)
                 breadth_bar = make_progress_bar(market_breadth_score, 100, 8)
+                
+                # 🛑 1. 風控閘門條件：市場情緒分數 < 35，視為系統性風險，直接攔截
+                if market_breadth_score < 35:
+                    return "GATE_BLOCKED", f"🔴 市場廣度極差 ({market_breadth_score}分) ➔ 觸發風控閘門！\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
+
                 return "OK", f"🟢 官方個股廣度 ➔ 放行\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
     except: 
         pass
@@ -86,6 +133,11 @@ def check_market_filter_and_holiday():
             fallback_score = 50 + (up_days - 2.5) * 6 + int(market_today_pct * 3)
             market_breadth_score = max(30, min(85, int(fallback_score)))
             breadth_bar = make_progress_bar(market_breadth_score, 100, 8)
+
+            # 🛑 風控閘門備援條件
+            if market_breadth_score < 35:
+                return "GATE_BLOCKED", f"🔴 大盤動能低迷 ➔ 觸發風控閘門！\n📊 連續上漲天數:{up_days}/5日\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
+
             return "OK", f"🟡 大盤趨勢備援 ➔ 放行\n📊 連續上漲天數:{up_days}/5日\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
     except: 
         pass
@@ -187,7 +239,6 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
     today_pct = ((current_now_price - d_close.iloc[-2]) / d_close.iloc[-2]) * 100 if (is_after_market and len(d_close) >= 2) else ((current_now_price - d_open.iloc[-1]) / d_open.iloc[-1]) * 100
     if today_pct > 9.5: return None
 
-    # 計算週漲跌幅(5日)、半月漲跌幅(10日)、整月漲跌幅(20日)
     week_pct = ((current_now_price - d_close.iloc[-6]) / d_close.iloc[-6]) * 100 if len(d_close) >= 6 else 0.0
     half_month_pct = ((current_now_price - d_close.iloc[-11]) / d_close.iloc[-11]) * 100 if len(d_close) >= 11 else 0.0
     month_pct = ((current_now_price - d_close.iloc[-21]) / d_close.iloc[-21]) * 100 if len(d_close) >= 21 else 0.0
@@ -244,7 +295,6 @@ def stage1_day_filter(df_d, current_hour, current_minute, is_after_market):
         else:
             return None 
 
-    # 🛡️ 動態 ATR 防守機制
     prev_close = d_close.shift(1)
     tr = pd.concat([d_high - d_low, (d_high - prev_close).abs(), (d_low - prev_close).abs()], axis=1).max(axis=1)
     current_atr = float(tr.rolling(ATR_PERIOD).mean().iloc[-1]) if not pd.isna(tr.rolling(ATR_PERIOD).mean().iloc[-1]) else 0.0
@@ -310,7 +360,7 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_after_ma
     vr26 = float(vr_series.iloc[-1])
     prev_vr26 = float(vr_series.iloc[-2]) if len(vr_series) >= 2 else vr26
 
-    # 🛑 嚴格過濾：VR < 100 (買氣渙散) 或 VR 沒有呈現上升趨勢，直接剔除！
+    # VR < 100 或趨勢未上升則過濾
     if vr26 < 100 or vr26 <= prev_vr26:
         return None
 
@@ -415,16 +465,30 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
     return passed_day_stocks, passed_weekly_df
 
 if __name__ == "__main__":
-    tz_taiwan = datetime.timezone(datetime.timedelta(hours=8))
-    now_dt = datetime.datetime.now(tz_taiwan)
-    now = now_dt.strftime("%Y-%m-%d %H:%M")
-    current_hour, current_minute = now_dt.hour, now_dt.minute
-    is_after_market = current_hour >= 14 or (now_dt.weekday() >= 5)
+    # 2. 精準取得市場時間與時段狀態
+    m_status = get_taiwan_market_status()
+    now_str = m_status["now_str"]
+    current_hour, current_minute = m_status["hour"], m_status["minute"]
+    is_after_market = m_status["is_after_market"]
+    market_phase = m_status["market_phase"]
 
-    # 1. 嚴格過濾個股的市場廣度與多層備援機制
+    # 1. 檢測大盤廣度與風控閘門
     filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
 
-    # 2. 抓取官方真實產業
+    # 🛑 若觸發風控閘門 (GATE_BLOCKED)，直接發送警告，並終止選股！
+    if filter_status == "GATE_BLOCKED":
+        block_msg = (
+            f"🔔 <b>【台股 666 風控閘門觸發通知】</b>\n"
+            f"⏰ 時間：{now_str} ({market_phase})\n"
+            f"------------------------\n"
+            f"{filter_msg}\n\n"
+            f"⛔ <b>系統處置：今日大盤風險過高，已開啟防守閘門，自動終止個股選股流程！</b>"
+        )
+        send_tg_msg(block_msg)
+        print("⛔ 大盤風控閘門已觸發，程式終止。")
+        exit(0)
+
+    # 3. 抓取官方真實產業
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
     
@@ -440,7 +504,7 @@ if __name__ == "__main__":
             day_passed_pool.update(d_res or {})
             weekly_df_pool.update(w_res or {})
     
-    # 3. 動態計算真實產業熱度
+    # 4. 動態計算真實產業熱度
     sector_heat_map = calculate_real_sector_heat(stock_map, day_passed_pool, market_breadth_score)
 
     results = []
@@ -486,8 +550,7 @@ if __name__ == "__main__":
                             })
             except: continue
                     
-    mode_title = "⚖️ 盤後全維度篩選" if is_after_market else "⚡ 盤中發動特攻"
-    header_msg = f"🔔 <b>【台股 666 {mode_title}戰報】</b>\n⏰ 時間：{now}\n🌐 大盤風控：{filter_msg}\n------------------------\n"
+    header_msg = f"🔔 <b>【台股 666 {market_phase}戰報】</b>\n⏰ 時間：{now_str}\n🌐 大盤風控：{filter_msg}\n------------------------\n"
 
     if results:
         df_report = pd.DataFrame(results).sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
