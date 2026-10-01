@@ -24,8 +24,8 @@ pd.set_option('display.width', 1000)
 # ----------------------------------------------------
 # 🔑 安全認證與環境變數讀取
 # ----------------------------------------------------
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TELEGRAM_TOKEN_HERE")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_TELEGRAM_CHAT_ID_HERE")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 WEEKLY_MA_PERIOD = 20
 ATR_PERIOD = 14
@@ -39,7 +39,7 @@ def make_progress_bar(score, max_score=100, total_blocks=10):
         return "░" * total_blocks
 
 def send_tg_msg(msg):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or TELEGRAM_TOKEN == "YOUR_TELEGRAM_TOKEN_HERE":
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print("⚠️ 未檢測到有效的 TELEGRAM_TOKEN 或 TELEGRAM_CHAT_ID！訊息將印在 Console：")
         print("--------------------------------------------------")
         print(msg)
@@ -60,7 +60,6 @@ def send_tg_msg(msg):
             print("✅ Telegram 戰報已成功送達！")
         else:
             print(f"❌ Telegram API 拒絕發送 (HTTP {res.status_code}): {res.text}")
-            # 備援發送機制：若 HTML 解析失敗，剔除標籤改純文字送出
             plain_text = re.sub('<[^<]+?>', '', msg)
             payload_plain = {"chat_id": TELEGRAM_CHAT_ID, "text": plain_text}
             res_backup = requests.post(url, json=payload_plain, timeout=10)
@@ -91,7 +90,7 @@ def get_taiwan_market_status():
     elif is_weekend:
         market_phase = "☕ 週末休市"
     elif time_num > 1330:
-        market_phase = "⚖️️ 盤後結算時段"
+        market_phase = "⚖ 盤後結算時段"
     else:
         market_phase = "🌙 開盤前/非交易時段"
 
@@ -113,7 +112,7 @@ def check_market_filter_and_holiday():
     market_breadth_score = 50 
     
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=8)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=5)
         if res.status_code == 200:
             data = res.json()
             twii_data = [x for x in data if "加權指數" in x.get("MS_Name", "")]
@@ -168,7 +167,7 @@ def check_market_filter_and_holiday():
     return "OK", f"🟠 基礎防禦模式 ➔ 放行\n📊 市場情緒：[{breadth_bar}] 50分 (中性)", 0.0, 50
 
 # ----------------------------------------------------
-# 📊 3. 法人籌碼數據模組 (含 Volume Floor 保護)
+# 📊 3. 法人籌碼數據模組 (防掛死限時 4 秒)
 # ----------------------------------------------------
 def get_chip_data_finmind(stock_id):
     chip_res = {
@@ -186,8 +185,9 @@ def get_chip_data_finmind(stock_id):
         url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
         url_vol = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
         
-        res_chip = requests.get(url_chip, timeout=6)
-        res_vol = requests.get(url_vol, timeout=6)
+        # 降至 4 秒 Timeout 防掛死
+        res_chip = requests.get(url_chip, timeout=4)
+        res_vol = requests.get(url_vol, timeout=4)
 
         if res_chip.status_code == 200 and res_vol.status_code == 200:
             df_chip = pd.DataFrame(res_chip.json().get("data", []))
@@ -195,8 +195,6 @@ def get_chip_data_finmind(stock_id):
             
             if not df_chip.empty and not df_vol.empty:
                 recent_vol_shares = df_vol.tail(3)["Trading_Volume"].sum()
-                
-                # 成交量下限保護 (Volume Floor): 最少以 1,000 張 (1,000,000 股) 作為分母
                 effective_denominator = max(1000000.0, float(recent_vol_shares))
                 
                 trust_df = df_chip[df_chip["name"] == "Investment_Trust"].tail(3)
@@ -219,10 +217,10 @@ def get_chip_data_finmind(stock_id):
                 return chip_res
 
         chip_res["error_status"] = "DATA_ERROR"
-        chip_res["chip_desc"] = "⚠️ 籌碼數據異常 (API Failure)"
-    except Exception as e:
+        chip_res["chip_desc"] = "⚠️ 籌碼數據異常"
+    except:
         chip_res["error_status"] = "DATA_ERROR"
-        chip_res["chip_desc"] = f"⚠️ 籌碼擷取失敗 ({type(e).__name__})"
+        chip_res["chip_desc"] = "⚠️ 籌碼連線逾時"
         
     return chip_res
 
@@ -268,12 +266,11 @@ def get_all_taiwan_stocks_official():
         ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=2", "TW"), 
         ("https://isin.twse.com.tw/isin/C_public.jsp?strMode=4", "TWO")
     ]
-    
     blacklisted_keywords = ["特", "甲", "乙", "存託憑證", "認購", "認售", "BC", "處置", "變更交易", "全額交割"]
     
     for url, m_type in urls:
         try:
-            res = requests.get(url, headers=headers, timeout=10)
+            res = requests.get(url, headers=headers, timeout=6)
             if res.status_code == 200:
                 res.encoding = 'big5'
                 tables = pd.read_html(res.text)
@@ -285,14 +282,10 @@ def get_all_taiwan_stocks_official():
                 for index, row in df.iterrows():
                     code_name = str(row.iloc[0]).strip()
                     sector = str(row.iloc[4]).strip() if len(row) > 4 else "通用產業"
-                    
                     match = re.match(r'^(\d{4})\s+(.+)$', code_name)
                     if match:
                         sid, sname = match.group(1), match.group(2).strip()
-                        
-                        if any(x in sname for x in blacklisted_keywords): 
-                            continue
-                        
+                        if any(x in sname for x in blacklisted_keywords): continue
                         official_sector = sector if (sector and sector != "nan" and sector != "無") else "一般產業"
                         stock_dict[f"{sid}.{m_type}"] = {
                             "sid": sid, 
@@ -346,7 +339,6 @@ def calculate_real_sector_heat(stock_map, passed_day_stocks):
 def stage0_weekly_filter(df_w):
     if df_w.empty or len(df_w) < (WEEKLY_MA_PERIOD + 1): 
         return False
-    
     df_clean = df_w.ffill().dropna(subset=["Close"])
     if len(df_clean) < (WEEKLY_MA_PERIOD + 1):
         return False
@@ -504,16 +496,12 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
     vr26 = float(vr_series.iloc[-1])
     prev_vr26 = float(vr_series.iloc[-2]) if len(vr_series) >= 2 else vr26
 
-    if vr26 < 80.0:
-        return None
+    if vr26 < 80.0: return None
 
     score_vr = 0.0
-    if vr26 >= 120.0:
-        score_vr = 3.0
-    elif vr26 >= 100.0:
-        score_vr = 2.0 if vr26 >= prev_vr26 else 1.0
-    else:
-        score_vr = 0.5
+    if vr26 >= 120.0: score_vr = 3.0
+    elif vr26 >= 100.0: score_vr = 2.0 if vr26 >= prev_vr26 else 1.0
+    else: score_vr = 0.5
 
     # 1️⃣ 趨勢維度 (20 分)
     score_trend = 0.0
@@ -608,14 +596,26 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
     }
 
 # ----------------------------------------------------
-# 🚀 8. 多線程資料下載與主程式流程
+# 🚀 8. 限時與防卡死多線程下載器
 # ----------------------------------------------------
+def download_chunk_safe(chunk):
+    """安全線程下載單一 Chunk，捕獲異常"""
+    try:
+        data_d = yf.download(chunk, period="60d", interval="1d", group_by="ticker", progress=False, auto_adjust=True, timeout=12)
+        data_w = yf.download(chunk, period="35wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True, timeout=12)
+        return data_d, data_w
+    except:
+        return None, None
+
 def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_minute, is_after_market):
     passed_day_stocks = {}
     passed_weekly_df = {}
+    
+    data_d, data_w = download_chunk_safe(chunk)
+    if data_d is None or data_w is None or data_d.empty or data_w.empty:
+        return passed_day_stocks, passed_weekly_df
+
     try:
-        data_d = yf.download(chunk, period="60d", interval="1d", group_by="ticker", progress=False, auto_adjust=True)
-        data_w = yf.download(chunk, period="35wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True)
         for ticker in chunk:
             if isinstance(data_w.columns, pd.MultiIndex) and ticker in data_w.columns.get_level_values(0):
                 df_stock_w = data_w[ticker].dropna(subset=["Close"])
@@ -631,7 +631,8 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
                     passed_day_stocks[ticker] = day_res
                     passed_weekly_df[ticker] = df_stock_w
     except Exception as e:
-        print(f"⚠️ 下載批次數據失敗: {e}")
+        print(f"⚠️ 解析批次數據時發生過濾例外: {e}")
+        
     return passed_day_stocks, passed_weekly_df
 
 if __name__ == "__main__":
@@ -642,9 +643,10 @@ if __name__ == "__main__":
     is_after_market = m_status["is_after_market"]
     market_phase = m_status["market_phase"]
 
+    print(f"⏰ 當前系統時間: {now_str} ({market_phase})")
+
     filter_status, filter_msg, market_today_pct, market_breadth_score = check_market_filter_and_holiday()
 
-    # 🛑 若大盤觸發風控閘門，通知後直接退出（自然結束不拋異常，確保 GitHub Actions 綠勾通過）
     if filter_status == "GATE_BLOCKED":
         block_msg = (
             f"🔔 <b>【台股 666 風控閘門觸發通知】</b>\n"
@@ -657,32 +659,44 @@ if __name__ == "__main__":
         print("⛔ 大盤風控閘門已觸發，程式優雅終止。")
         exit(0)
 
+    print("🔍 正在爬取臺灣證券交易所/櫃買中心官方股票清單...")
     stock_map = get_all_taiwan_stocks_official()
     all_yf_codes = list(stock_map.keys())
-    
-    chunk_size = 40  
+    print(f"✅ 成功載入 {len(all_yf_codes)} 檔股票標的！")
+
+    chunk_size = 50  
     chunks = [all_yf_codes[i:i + chunk_size] for i in range(0, len(all_yf_codes), chunk_size)]
     
     day_passed_pool = {}
     weekly_df_pool = {}
-    print(f"🔄 開始執行日線/週線初篩 (共 {len(all_yf_codes)} 檔標的)...")
-    with ThreadPoolExecutor(max_workers=6) as executor:
-        futures = {executor.submit(download_all_timeframes_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): chunk for chunk in chunks}
-        for future in as_completed(futures):
-            d_res, w_res = future.result()
-            day_passed_pool.update(d_res or {})
-            weekly_df_pool.update(w_res or {})
+    print(f"🔄 開始進行日/週線初篩 (共 {len(chunks)} 個批次，4 執行緒推進)...")
     
+    # 縮減至 4 個 Worker，避免連線暴衝被 Yahoo 封鎖
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(download_all_timeframes_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): idx for idx, chunk in enumerate(chunks)}
+        
+        # 加上 as_completed 逾時機制，避免單一線程超時拖死全域
+        for future in as_completed(futures):
+            chunk_idx = futures[future]
+            try:
+                d_res, w_res = future.result(timeout=25) # 批次最高等 25 秒
+                day_passed_pool.update(d_res or {})
+                weekly_df_pool.update(w_res or {})
+            except Exception as e:
+                print(f"⚠️ 批次 {chunk_idx+1} 下載連線逾時或失敗，已自動跳過，不影響其他批次。")
+
+    print(f"✅ 第一階段初篩完成！共有 {len(day_passed_pool)} 檔標的符合標準。")
+
     sector_heat_map = calculate_real_sector_heat(stock_map, day_passed_pool)
 
     results = []
     if day_passed_pool:
-        print(f"⚡ 初篩通過 {len(day_passed_pool)} 檔，開始計算籌碼與 60m 全維度分數...")
+        print("⚡ 開始進行第二階段 60m K 線與籌碼微觀掃描...")
         passed_tickers = list(day_passed_pool.keys())
         passed_chunks = [passed_tickers[i:i + 20] for i in range(0, len(passed_tickers), 20)]
         for p_chunk in passed_chunks:
             try:
-                data_60m = yf.download(p_chunk, period="20d", interval="60m", group_by="ticker", progress=False, auto_adjust=True)
+                data_60m = yf.download(p_chunk, period="20d", interval="60m", group_by="ticker", progress=False, auto_adjust=True, timeout=15)
                 for ticker in p_chunk:
                     if isinstance(data_60m.columns, pd.MultiIndex) and ticker in data_60m.columns.get_level_values(0):
                         df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
@@ -732,7 +746,7 @@ if __name__ == "__main__":
                                 "atr_info": final_res["atr_info"]
                             })
             except Exception as e:
-                print(f"⚠️ 60m 篩選運算異常: {e}")
+                print(f"⚠️ 60m 掃描跳過批次: {e}")
                 continue
                     
     header_msg = f"🔔 <b>【台股 666 {market_phase}戰報】</b>\n⏰ 時間：{now_str}\n🌐 大盤風控：{filter_msg}\n------------------------\n"
@@ -760,7 +774,7 @@ if __name__ == "__main__":
                 f" ➔ 結構: <code>{row['細項評分']}</code>\n"
             )
         send_tg_msg(header_msg + "\n".join(top_list))
-        print("✅ 戰報發送完成！")
+        print("✅ 戰報發送流程完成！")
     else:
         send_tg_msg(header_msg + "ℹ️ 池中無符合全維度高分標準之個股。")
-        print("ℹ️ 無符合條件個股。")
+        print("ℹ️ 無符合條件個股，已發送無結果通知。")
