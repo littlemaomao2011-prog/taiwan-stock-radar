@@ -1,53 +1,34 @@
-name: Taiwan Stock Radar System
+name: 台股 666 自動精選雷達
 
 on:
+  workflow_dispatch:
   schedule:
-    # 💡 調整後的黃金排程時間（台北時間為 UTC +8）：
-    # 盤中特攻：國際時間 01:45 (台北時間 09:45) -> 避開剛開盤震盪
-    # 盤後選股：國際時間 06:55 (台北時間 14:55) -> 避開 yfinance 資料庫清算延遲，100% 抓齊
-    - cron: '45 1 * * 1-5'
-    - cron: '55 6 * * 1-5'
-  workflow_dispatch: # 允許隨時在 GitHub 網頁上手動點擊「Run workflow」觸發
+    # 依您的需求設定定時任務 (目前範例：每週一至週五 盤中 09:30 與 盤後 14:00 執行)
+    # 註：GitHub Actions 使用 UTC 時間，台灣時間 (UTC+8) 09:30 為 UTC 01:30
+    - cron: '30 1 * * 1-5'
+    - cron: '0 6 * * 1-5'
 
 jobs:
   run-radar:
     runs-on: ubuntu-latest
-    
-    # ✨ 核心權限：強制賦予虛擬機具有 Git Push 回寫儲存庫的權限
-    permissions:
-      contents: write
 
     steps:
-    - name: 📥 複製儲存庫代碼 (Checkout)
-      uses: actions/checkout@v4
+      - name: 複製儲存庫代碼 (Checkout)
+        uses: actions/checkout@v4
 
-    - name: 🐍 初始化 Python 環境
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip'
+      - name: 初始化 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-    - name: 🛠️ 自動下載並編譯安裝 TA-Lib C 語言核心與套件
-      run: |
-        python -m pip install --upgrade pip
-        
-        echo "⏳ 正在下載 TA-Lib 核心 C 語言原始碼..."
-        wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-        tar -xzf ta-lib-0.4.0-src.tar.gz
-        
-        echo "⏳ 開始編譯 TA-Lib 底層函式庫 (此步驟約需 30 秒)..."
-        cd ta-lib/
-        ./configure --prefix=/usr
-        make
-        sudo make install
-        
-        echo "✨ TA-Lib 底層 C 庫安裝成功，清理環境..."
-        cd ..
-        rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
-        
-        echo "⏳ 開始安裝 Python 依賴套件與 TA-Lib 封裝層..."
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-        pip install TA-Lib
+      - name: 安裝所需 Python 套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pandas numpy yfinance lxml
 
-    - name: 🚀 執行台股 666 精選雷達
-      run: python scanner_rising_point.py
+      - name: 🚀 執行台股 666 精選雷達
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python scanner_rising_point.py
