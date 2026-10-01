@@ -702,7 +702,6 @@ if __name__ == "__main__":
                             official_sector = stock_map[ticker].get("sector", "一般產業")
                             sector_info = sector_heat_map.get(official_sector, {"score": 2.0, "desc": "🌱 一般表現"})
                             
-                            # FinMind 籌碼獲取：失敗自動降級標記，絕不中斷整體流程
                             chip_res = get_chip_data_finmind(sid)
                             
                             df_w = weekly_df_pool.get(ticker)
