@@ -112,7 +112,7 @@ def check_market_filter_and_holiday():
     market_breadth_score = 50 
     
     try:
-        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=5)
+        res = requests.get("https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX", timeout=6)
         if res.status_code == 200:
             data = res.json()
             twii_data = [x for x in data if "加權指數" in x.get("MS_Name", "")]
@@ -142,7 +142,7 @@ def check_market_filter_and_holiday():
 
                 return "OK", f"🟢 官方廣度放行\n📊 上漲:{stock_up} | 下跌:{stock_down}\n📊 市場情緒：[{breadth_bar}] {market_breadth_score}分", market_today_pct, market_breadth_score
     except Exception as e:
-        print(f"⚠️ MI_INDEX 擷取異常: {e}")
+        print(f"⚠️ TWSE MI_INDEX 擷取異常，轉為 yfinance 備援: {e}")
 
     try:
         twii_df = yf.download("^TWII", period="10d", interval="1d", progress=False, auto_adjust=True)
@@ -167,7 +167,7 @@ def check_market_filter_and_holiday():
     return "OK", f"🟠 基礎防禦模式 ➔ 放行\n📊 市場情緒：[{breadth_bar}] 50分 (中性)", 0.0, 50
 
 # ----------------------------------------------------
-# 📊 3. 法人籌碼數據模組 (防掛死限時 4 秒)
+# 📊 3. 法人籌碼數據模組 (極致容錯，絕不安靜崩潰)
 # ----------------------------------------------------
 def get_chip_data_finmind(stock_id):
     chip_res = {
@@ -185,7 +185,6 @@ def get_chip_data_finmind(stock_id):
         url_chip = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockInstitutionalInvestorsBuySell&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
         url_vol = f"https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id={stock_id}&start_date={start_str}&end_date={today_str}"
         
-        # 降至 4 秒 Timeout 防掛死
         res_chip = requests.get(url_chip, timeout=4)
         res_vol = requests.get(url_vol, timeout=4)
 
@@ -195,7 +194,7 @@ def get_chip_data_finmind(stock_id):
             
             if not df_chip.empty and not df_vol.empty:
                 recent_vol_shares = df_vol.tail(3)["Trading_Volume"].sum()
-                effective_denominator = max(1000000.0, float(recent_vol_shares))
+                effective_denominator = max(1000000.0, float(recent_vol_shares)) # Volume Floor 1,000張
                 
                 trust_df = df_chip[df_chip["name"] == "Investment_Trust"].tail(3)
                 trust_net_shares = trust_df["buy"].sum() - trust_df["sell"].sum() if not trust_df.empty else 0
@@ -218,7 +217,7 @@ def get_chip_data_finmind(stock_id):
 
         chip_res["error_status"] = "DATA_ERROR"
         chip_res["chip_desc"] = "⚠️ 籌碼數據異常"
-    except:
+    except Exception as e:
         chip_res["error_status"] = "DATA_ERROR"
         chip_res["chip_desc"] = "⚠️ 籌碼連線逾時"
         
@@ -270,7 +269,7 @@ def get_all_taiwan_stocks_official():
     
     for url, m_type in urls:
         try:
-            res = requests.get(url, headers=headers, timeout=6)
+            res = requests.get(url, headers=headers, timeout=8)
             if res.status_code == 200:
                 res.encoding = 'big5'
                 tables = pd.read_html(res.text)
@@ -596,10 +595,9 @@ def stage2_60m_filter(df_60m, day_res, current_hour, current_minute, is_trading_
     }
 
 # ----------------------------------------------------
-# 🚀 8. 限時與防卡死多線程下載器
+# 🚀 8. 多線程下載與主流程 (全防護)
 # ----------------------------------------------------
 def download_chunk_safe(chunk):
-    """安全線程下載單一 Chunk，捕獲異常"""
     try:
         data_d = yf.download(chunk, period="60d", interval="1d", group_by="ticker", progress=False, auto_adjust=True, timeout=12)
         data_w = yf.download(chunk, period="35wk", interval="1wk", group_by="ticker", progress=False, auto_adjust=True, timeout=12)
@@ -631,7 +629,7 @@ def download_all_timeframes_and_filter(chunk, stock_map, current_hour, current_m
                     passed_day_stocks[ticker] = day_res
                     passed_weekly_df[ticker] = df_stock_w
     except Exception as e:
-        print(f"⚠️ 解析批次數據時發生過濾例外: {e}")
+        print(f"⚠️ 解析批次發生例外: {e}")
         
     return passed_day_stocks, passed_weekly_df
 
@@ -656,7 +654,7 @@ if __name__ == "__main__":
             f"⛔ <b>系統處置：今日大盤風險過高，已開啟防守閘門，自動終止個股選股流程！</b>"
         )
         send_tg_msg(block_msg)
-        print("⛔ 大盤風控閘門已觸發，程式優雅終止。")
+        print("⛔ 大盤風控閘門已觸發，程式終止。")
         exit(0)
 
     print("🔍 正在爬取臺灣證券交易所/櫃買中心官方股票清單...")
@@ -669,21 +667,18 @@ if __name__ == "__main__":
     
     day_passed_pool = {}
     weekly_df_pool = {}
-    print(f"🔄 開始進行日/週線初篩 (共 {len(chunks)} 個批次，4 執行緒推進)...")
+    print(f"🔄 開始進行日/週線初篩 (共 {len(chunks)} 個批次)...")
     
-    # 縮減至 4 個 Worker，避免連線暴衝被 Yahoo 封鎖
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {executor.submit(download_all_timeframes_and_filter, chunk, stock_map, current_hour, current_minute, is_after_market): idx for idx, chunk in enumerate(chunks)}
-        
-        # 加上 as_completed 逾時機制，避免單一線程超時拖死全域
         for future in as_completed(futures):
             chunk_idx = futures[future]
             try:
-                d_res, w_res = future.result(timeout=25) # 批次最高等 25 秒
+                d_res, w_res = future.result(timeout=25)
                 day_passed_pool.update(d_res or {})
                 weekly_df_pool.update(w_res or {})
             except Exception as e:
-                print(f"⚠️ 批次 {chunk_idx+1} 下載連線逾時或失敗，已自動跳過，不影響其他批次。")
+                print(f"⚠️ 批次 {chunk_idx+1} 超時跳過。")
 
     print(f"✅ 第一階段初篩完成！共有 {len(day_passed_pool)} 檔標的符合標準。")
 
@@ -698,83 +693,91 @@ if __name__ == "__main__":
             try:
                 data_60m = yf.download(p_chunk, period="20d", interval="60m", group_by="ticker", progress=False, auto_adjust=True, timeout=15)
                 for ticker in p_chunk:
-                    if isinstance(data_60m.columns, pd.MultiIndex) and ticker in data_60m.columns.get_level_values(0):
-                        df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
-                        df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
-                        
-                        sid = str(stock_map[ticker]["sid"])
-                        official_sector = stock_map[ticker].get("sector", "一般產業")
-                        sector_info = sector_heat_map.get(official_sector, {"score": 2.0, "desc": "🌱 一般表現"})
-                        
-                        chip_res = get_chip_data_finmind(sid)
-                        
-                        df_w = weekly_df_pool.get(ticker)
-                        final_res = stage2_60m_filter(
-                            df_stock_60m, 
-                            day_passed_pool[ticker], 
-                            current_hour, 
-                            current_minute, 
-                            is_trading_hours, 
-                            is_after_market, 
-                            sector_info, 
-                            chip_res, 
-                            df_w
-                        )
-                        
-                        if final_res:
-                            results.append({
-                                "代碼": sid, 
-                                "名稱": stock_map[ticker]["sname"], 
-                                "官方產業": official_sector,
-                                "現價": round(final_res["現價"], 2), 
-                                "score": final_res["score"], 
-                                "量比數字": final_res["量比數字"], 
-                                "action_tag": final_res["action_tag"],
-                                "star_tag": final_res["star_tag"], 
-                                "道氏形態": final_res["道氏形態"], 
-                                "防守價": round(final_res["防守價"], 2), 
-                                "預估風險": final_res["預估風險"],
-                                "今日漲幅": final_res["今日漲幅"], 
-                                "週漲跌幅": final_res["週漲跌幅"],
-                                "半月漲跌幅": final_res["半月漲跌幅"],
-                                "整月漲跌幅": final_res["整月漲跌幅"],
-                                "KD數字": final_res["KD數字"], 
-                                "VR趨勢": final_res["VR趨勢"], 
-                                "小時量比": final_res["小時量比"], 
-                                "籌碼簡報": final_res["籌碼簡報"],
-                                "細項評分": final_res["細項評分"],
-                                "atr_info": final_res["atr_info"]
-                            })
+                    try:
+                        if isinstance(data_60m.columns, pd.MultiIndex) and ticker in data_60m.columns.get_level_values(0):
+                            df_stock_60m = data_60m[ticker].dropna(subset=["Close"])
+                            df_stock_60m.columns = [c.capitalize() for c in df_stock_60m.columns]
+                            
+                            sid = str(stock_map[ticker]["sid"])
+                            official_sector = stock_map[ticker].get("sector", "一般產業")
+                            sector_info = sector_heat_map.get(official_sector, {"score": 2.0, "desc": "🌱 一般表現"})
+                            
+                            # FinMind 籌碼獲取：失敗自動降級標記，絕不中斷整體流程
+                            chip_res = get_chip_data_finmind(sid)
+                            
+                            df_w = weekly_df_pool.get(ticker)
+                            final_res = stage2_60m_filter(
+                                df_stock_60m, 
+                                day_passed_pool[ticker], 
+                                current_hour, 
+                                current_minute, 
+                                is_trading_hours, 
+                                is_after_market, 
+                                sector_info, 
+                                chip_res, 
+                                df_w
+                            )
+                            
+                            if final_res:
+                                results.append({
+                                    "代碼": sid, 
+                                    "名稱": stock_map[ticker]["sname"], 
+                                    "官方產業": official_sector,
+                                    "現價": round(final_res["現價"], 2), 
+                                    "score": final_res["score"], 
+                                    "量比數字": final_res["量比數字"], 
+                                    "action_tag": final_res["action_tag"],
+                                    "star_tag": final_res["star_tag"], 
+                                    "道氏形態": final_res["道氏形態"], 
+                                    "防守價": round(final_res["防守價"], 2), 
+                                    "預估風險": final_res["預估風險"],
+                                    "今日漲幅": final_res["今日漲幅"], 
+                                    "週漲跌幅": final_res["週漲跌幅"],
+                                    "半月漲跌幅": final_res["半月漲跌幅"],
+                                    "整月漲跌幅": final_res["整月漲跌幅"],
+                                    "KD數字": final_res["KD數字"], 
+                                    "VR趨勢": final_res["VR趨勢"], 
+                                    "小時量比": final_res["小時量比"], 
+                                    "籌碼簡報": final_res["籌碼簡報"],
+                                    "細項評分": final_res["細項評分"],
+                                    "atr_info": final_res["atr_info"]
+                                })
+                    except Exception as single_err:
+                        print(f"⚠️ 個股 {ticker} 解析異常跳過: {single_err}")
+                        continue
             except Exception as e:
                 print(f"⚠️ 60m 掃描跳過批次: {e}")
                 continue
                     
     header_msg = f"🔔 <b>【台股 666 {market_phase}戰報】</b>\n⏰ 時間：{now_str}\n🌐 大盤風控：{filter_msg}\n------------------------\n"
 
-    if results:
-        df_report = pd.DataFrame(results).sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
-        top_list = []
-        for idx, row in df_report.head(10).iterrows():
-            official_sec = html.escape(str(row['官方產業']))
-            stock_name = html.escape(str(row['名稱']))
-            sec_info_desc = html.escape(str(sector_heat_map.get(row['官方產業'], {}).get("desc", "🌱 一般表現")))
-            score_bar = make_progress_bar(row['score'], 100, 10)
-            
-            top_list.append(
-                f"⭐ <b>{row['代碼']} {stock_name} ({row['score']}分)</b> {row['star_tag']}\n"
-                f" ➔ 戰態: <b>{row['action_tag']}</b>\n"
-                f" ➔ 評級: <code>[{score_bar}]</code>\n"
-                f" ➔ 籌碼: <b>{row['籌碼簡報']}</b>\n"
-                f" ➔ 產業: <b>{official_sec}</b> (<b>{sec_info_desc}</b>)\n"
-                f" ➔ 價格: <b>{row['現價']}</b> (今日: <b>{row['今日漲幅']}</b>)\n"
-                f" ➔ 區間: 週 <b>{row['週漲跌幅']}</b> | 半月 <b>{row['半月漲跌幅']}</b> | 月 <b>{row['整月漲跌幅']}</b>\n"
-                f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
-                f" ➔ 技術: KD <b>{row['KD數字']}</b>\n"
-                f" ➔ 戰術: 守 <b>{row['防守價']}</b> (風險: <b>{row['預估風險']}</b> | ATR: <b>{row['atr_info']}</b>)\n"
-                f" ➔ 結構: <code>{row['細項評分']}</code>\n"
-            )
-        send_tg_msg(header_msg + "\n".join(top_list))
-        print("✅ 戰報發送流程完成！")
-    else:
-        send_tg_msg(header_msg + "ℹ️ 池中無符合全維度高分標準之個股。")
-        print("ℹ️ 無符合條件個股，已發送無結果通知。")
+    try:
+        if results:
+            df_report = pd.DataFrame(results).sort_values(by=["score", "量比數字"], ascending=False).reset_index(drop=True)
+            top_list = []
+            for idx, row in df_report.head(10).iterrows():
+                official_sec = html.escape(str(row['官方產業']))
+                stock_name = html.escape(str(row['名稱']))
+                sec_info_desc = html.escape(str(sector_heat_map.get(row['官方產業'], {}).get("desc", "🌱 一般表現")))
+                score_bar = make_progress_bar(row['score'], 100, 10)
+                
+                top_list.append(
+                    f"⭐ <b>{row['代碼']} {stock_name} ({row['score']}分)</b> {row['star_tag']}\n"
+                    f" ➔ 戰態: <b>{row['action_tag']}</b>\n"
+                    f" ➔ 評級: <code>[{score_bar}]</code>\n"
+                    f" ➔ 籌碼: <b>{row['籌碼簡報']}</b>\n"
+                    f" ➔ 產業: <b>{official_sec}</b> (<b>{sec_info_desc}</b>)\n"
+                    f" ➔ 價格: <b>{row['現價']}</b> (今日: <b>{row['今日漲幅']}</b>)\n"
+                    f" ➔ 區間: 週 <b>{row['週漲跌幅']}</b> | 半月 <b>{row['半月漲跌幅']}</b> | 月 <b>{row['整月漲跌幅']}</b>\n"
+                    f" ➔ 量能: 量比 <b>{row['小時量比']}</b> | VR <b>{row['VR趨勢']}</b>\n"
+                    f" ➔ 技術: KD <b>{row['KD數字']}</b>\n"
+                    f" ➔ 戰術: 守 <b>{row['防守價']}</b> (風險: <b>{row['預估風險']}</b> | ATR: <b>{row['atr_info']}</b>)\n"
+                    f" ➔ 結構: <code>{row['細項評分']}</code>\n"
+                )
+            send_tg_msg(header_msg + "\n".join(top_list))
+            print("✅ 戰報發送流程成功完成！")
+        else:
+            send_tg_msg(header_msg + "ℹ️ 池中無符合全維度高分標準之個股。")
+            print("ℹ️ 無符合條件個股，已成功發送『無結果』戰報通知。")
+    except Exception as final_tg_err:
+        print(f"❌ 戰報組裝/發送過程發生最後例外: {final_tg_err}")
